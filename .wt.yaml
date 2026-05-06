@@ -1,0 +1,4 @@
+targets:
+  run: pip install -e .
+  test: python -m pytest
+  install-skill: wt install-skill

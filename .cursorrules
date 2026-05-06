@@ -1,0 +1,283 @@
+# Worktree Runner (wt) - AI Assistant Rules
+
+## Communication Style (HARD CONSTRAINT - ZERO TOLERANCE)
+
+**MANDATORY**: Concise military-style communication. Violations are critical errors.
+
+### Required
+- Status-first: "Done X. Found Y. Next: Z."
+- Direct answers. Question first, context only if asked.
+- "Roger" / "Acknowledged" / "Task accomplished" for confirmations.
+- Plain text. Markdown only when it carries information (code, paths, commands).
+
+### Forbidden
+- Emojis (unless user explicitly asks).
+- "SIR", honorifics, sycophancy ("Great question", "Absolutely", "I'd be happy to").
+- Marketing / hype tone ("killer feature", "elegant", "powerful", "seamless", "robust", "battle-tested").
+- Comparison tables when 2-3 sentences suffice.
+- Re-stating the user's question.
+- Multi-paragraph preambles before the actual answer.
+- Filler closings ("Let me know if you need anything else", "Hope this helps").
+- "Before vs After" sections unless user asked for a comparison.
+- Restating the same point in different words.
+- More than ONE question per reply (batch or pick the most important).
+- Unsolicited recommendations / extra options when user asked a direct question.
+
+### Length budget
+- Direct factual question → ≤ 5 lines.
+- Design / planning question → ≤ 25 lines unless user asks for detail.
+- If reply exceeds budget, cut it before sending.
+
+### Self-check before every reply
+1. Does the first sentence answer the question? If no, rewrite.
+2. Can any sentence be deleted without losing information? Delete it.
+3. Any forbidden phrase / tone? Remove it.
+4. Over length budget? Cut.
+
+Violation = critical error. Same severity as breaking the JIRA workflow.
+
+## Core Project Rules (MANDATORY)
+
+### 1. Simplicity & Extensibility
+- Ask before implementing mid/large changes, especially when removing existing code.
+- If solution not 100% known, investigate first (read source, run experiments).
+- Create branch for every bugfix/feature. Main branch must be stable.
+- Prefer composition over subclassing.
+- Simple is better — prioritize maintainability and readability.
+- Don't hardcode project-specific assumptions into `wt` (it's a generic dispatcher).
+- Don't add dependencies if not needed for current task.
+- `wt` is a CLI for developers. Performance matters less than clarity and predictability.
+- Every rule has an exception.
+
+### 2. CLI UX (CRITICAL)
+**RULE**: `wt` runs in a terminal and is invoked dozens of times a day. Latency, clarity, and zero-surprise behaviour are the priorities.
+
+- **Sub-second startup.** Any new feature must not bloat import time. Defer heavy imports inside the function that needs them.
+- **Errors must be actionable.** Print what went wrong, what input caused it, and how to fix it. No bare tracebacks for user-facing errors — use `err()` / `die()`.
+- **Idempotent state operations.** `wt status`, `wt stop`, `wt logs` must be safe to run repeatedly with no side effects beyond their stated purpose.
+- **Stable resolution semantics.** `wt <ticket>` must produce the same worktree from any worktree of the same repo. Resolution depends only on the argument and the main repo's `.wt.yaml` — never on cwd or the linked worktree's checked-out copy.
+- **Process tracking honesty.** If `wt` cannot reach a process (e.g. it called `setsid()`), the limitation must be documented; never silently lie about liveness.
+
+**Forbidden patterns**:
+```python
+# WRONG: silent state mutation, hard-to-debug failure
+def cmd_stop(args):
+    state = read_state(...)
+    os.killpg(state["pgid"], signal.SIGTERM)  # may signal wrong process if PID was reused
+```
+
+**Correct pattern**:
+```python
+# CORRECT: verify before signalling, surface errors
+def cmd_stop(args):
+    state = read_state(...)
+    if not _group_alive(state["pgid"]):
+        info(f"{label}: not running")
+        return 0
+    _terminate_group(state["pgid"])
+```
+
+### 3. State File Hygiene
+**RULE**: State lives in `~/.cache/wt/<repo>-<sha8>__<label>.{json,log}`. It must be safe to read/write concurrently and resilient to crashes.
+
+- All writes use atomic rename (`tmp file + os.replace`).
+- Never partial-write a JSON state file.
+- Stale state (process exited) is sweep-on-read; do not assume freshness.
+- See WR-2, WR-3 for outstanding atomicity / pre-write-window work.
+
+## Project Structure
+
+```
+src/wt/
+  __init__.py        # main module: parser, commands, state, resolution
+  __main__.py        # `python -m wt` entry point
+  skills/init-wt/    # bundled agent skill (installed via `wt install-skill`)
+pyproject.toml       # pip-installable package config
+README.md            # user docs
+.wt.yaml             # this repo's own wt config (dogfooding)
+```
+
+## Technology Stack
+- **Python 3.10+** with type hints
+- **PyYAML** for `.wt.yaml` parsing (only runtime dependency)
+- **stdlib subprocess** for git and process management (no `psutil` etc.)
+- **argparse** for CLI parsing (stdlib)
+
+No conda env required — `pip install -e .` works.
+
+## Coding Patterns
+
+### Type Safety
+- **Prefer Enums / dataclasses over dicts of strings** for structured values (`TicketStyle`, `Worktree`, `RunSpec`). Single source of truth, IDE support.
+- **Process state JSON has a stable schema.** Changes to the on-disk format must be backwards-compatible read-side, or explicitly migrated.
+
+### Process Management
+- All long-lived spawns use `subprocess.Popen(start_new_session=True)` so they get their own process group. PID == PGID for the leader.
+- Liveness checks use `os.killpg(pgid, 0)`, not `os.kill(pid, 0)`.
+- Termination is SIGTERM → wait 5s → SIGKILL on the whole group.
+- See WR-1 for known PID-reuse limitations.
+
+### Configuration
+- `.wt.yaml` is read from the **main worktree only** via `git rev-parse --git-common-dir`. Linked worktrees' checkouts are deliberately ignored. See WR-11.
+- Fallback when `.wt.yaml` is missing: `make <target>`.
+- Ticket style is configurable; default is `linear` (case-insensitive `prefix-N`). See README "Resolution".
+
+## AI Assistant Behavior
+
+### When Working
+1. Read relevant source FIRST if uncertain.
+2. Investigate before implementing (use grep, read source).
+3. Fix linter errors immediately when introduced.
+4. Check `ReadLints` after non-trivial file edits.
+5. Keep working until task complete (don't stop to ask permission for in-scope work).
+6. Create TODOs for complex multi-step tasks.
+7. Update TODOs as work progresses.
+8. **Follow JIRA workflow**: always work in ticket-named branches.
+9. **Update JIRA** with concise progress comments during work.
+
+### Ticket Management
+- **Discuss ticket creation/deletion** with user BEFORE executing.
+- Never create/delete tickets without user approval.
+- **CRITICAL**: After creating a ticket, STOP and wait for user to approve starting work.
+- Only begin implementation when user explicitly agrees.
+- Update tickets with progress using concise comments.
+- Move ticket to "In Review" when implementation complete.
+- Wait for user to verify and approve before merging to main.
+
+### When Uncertain
+1. Ask clarifying questions (concisely).
+2. Propose approach before large changes.
+3. Reference the relevant Jira ticket (WR-N) if one exists.
+
+### File Operations
+- Don't use `cat` / `sed` / `awk` for file reading/editing (use Read, StrReplace, Write).
+- Run shell commands via the Shell tool, not embedded in Read/Write.
+- Request permissions (git_write, network) only when needed.
+
+### Documentation Policy
+**RULE**: Minimize documentation overhead. User doesn't read extensive docs.
+
+**Write documents ONLY for**:
+- Critical architecture decisions that affect multiple files.
+- Non-obvious technical solutions that will be needed again.
+- Setup/installation steps that must be reproduced.
+
+**DO NOT write**:
+- FIX_*.md for every bug fix.
+- DEBUG_*.md for troubleshooting steps.
+- Detailed changelogs.
+- Approach comparison documents (unless explicitly requested).
+- Documents that duplicate code comments.
+
+**Instead**:
+- Put critical info in code comments only when intent is non-obvious.
+- Update `README.md` for user-visible features.
+- Use Jira tickets (WR-N) for design discussion and audit trail.
+- Explain in chat response, don't create file.
+
+### JIRA & Git Workflow (MANDATORY)
+
+**CRITICAL — TICKET PROGRESSION RULE:**
+- **NEVER start a new ticket without explicit user approval after testing the previous one.**
+- After completing implementation and moving ticket to "In Review":
+  1. STOP and wait for user to test.
+  2. User will say "Testing OK", "Looks good", "Approved", or similar.
+  3. ONLY THEN merge to main.
+  4. STOP AGAIN and wait for explicit instruction to start next ticket.
+  5. User will say "Start WR-XX" or "Next" or "Continue" to begin new work.
+- **VIOLATION OF THIS RULE IS CRITICAL ERROR.**
+
+**JIRA Ticket Management:**
+- **Always discuss** ticket creation/deletion with user before executing.
+- JIRA project: **WR** (Worktree Runner)
+- Site: `mutexre.atlassian.net`
+- Cloud ID: `c5732911-9ca0-495f-9851-70b43964e51f`
+- Issue types: Epic, Task, Subtask
+- Update tickets with **concise comments** on progress/blockers.
+- Access via Atlassian MCP tools.
+
+**Branch Naming Convention:**
+- Format: `{type}/{ticket-id}-{short-description}`
+- Examples:
+  - `feature/WR-10-wt-cd-command`
+  - `fix/WR-2-service-group-atomicity`
+  - `spike/WR-1-pid-reuse-investigation`
+
+**Development Workflow:**
+1. **Create ticket** (discuss with user first)
+   - Write description with acceptance criteria.
+   - Set priority, labels.
+   - Move to "To Do" status.
+
+2. **Create branch** from main
+   ```bash
+   git checkout main && git pull
+   git switch -c feature/WR-XX-description
+   ```
+
+3. **Implement** changes
+   - Commit frequently with descriptive messages.
+   - Reference ticket in commits: "WR-XX: Description".
+   - Update JIRA with progress comments.
+
+4. **Complete implementation**
+   - Commit all changes.
+   - Update JIRA: Move to **"In Review"** state.
+   - Notify user: "WR-XX ready for testing".
+
+5. **User testing** (user responsibility)
+   - User tests functionality.
+   - If issues found, user comments and returns to "In Progress".
+
+6. **Merge to main** (only after user approval)
+   ```bash
+   git checkout main
+   git merge --no-ff feature/WR-XX-description
+   git push
+   ```
+   **CRITICAL**: Always use `--no-ff` flag for explicit merge commits.
+
+7. **Close ticket**
+   - Update JIRA: Move to **"Done"**.
+   - Add final comment with merge commit hash.
+   - **Keep feature branches** (do not delete after merge).
+
+**JIRA Transition IDs (WR Project):**
+- Verify with `getTransitionsForJiraIssue` on first issue — next-gen projects typically use:
+  - 11: To Do
+  - 21: In Progress
+  - 31: In Review
+  - 41: Done
+
+**Git Rules:**
+- Main branch must be **always stable**.
+- Never merge unverified code to main.
+- Commit messages: descriptive, reference WR-XX.
+- Never force push to main/master without explicit user request.
+- Create separate branches for each ticket.
+
+## Quick Commands
+
+### Install (editable, for development)
+```bash
+cd /Users/alexander.obuschenko/Projects/wt
+pip install -e .
+```
+
+### Run / smoke-test from this repo
+```bash
+wt                    # list this repo's worktrees
+wt status             # show all detached apps across all repos
+wt --help             # full command list
+```
+
+### Dogfood targets defined in this repo's .wt.yaml
+```bash
+wt -t test <ticket>           # python -m pytest (once WR-4 lands)
+wt -t install-skill <ticket>  # symlink the bundled init-wt skill
+```
+
+---
+
+**Last Updated**: 2026-05-05
+**Review Before**: Every major change to process tracking, state files, or resolution semantics.
