@@ -366,6 +366,14 @@ def _log_file(state_id: str) -> Path:
     return CACHE_DIR / f"{state_id}.log"
 
 
+def _write_state(path: Path, data: dict) -> None:
+    """Atomically write JSON state via tmp file + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)
+
+
 def _read_state(path: Path) -> Optional[dict]:
     if not path.exists():
         return None
@@ -568,8 +576,13 @@ def cmd_launch_detached(args) -> int:
     log_path = _log_file(sid)
 
     existing = _read_state(state_path)
-    if existing and _state_any_alive(existing):
+    if existing and (existing.get("pending") or _state_any_alive(existing)):
         if not args.force:
+            if existing.get("pending"):
+                return err(
+                    f"{w.label} is being launched by another process. "
+                    f"Pass --force to override."
+                )
             pids = _state_alive_pids_str(existing)
             return err(
                 f"{w.label} already running (pid {pids}). "
@@ -580,31 +593,53 @@ def cmd_launch_detached(args) -> int:
         state_path.unlink(missing_ok=True)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    log_fp = open(log_path, "ab")
-    processes: list[dict] = []
-    for name, cmd in spec.commands:
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            cwd=str(w.path),
-            stdin=subprocess.DEVNULL,
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        processes.append({"name": name, "pid": proc.pid})
-        info(f"started {name} (pid {proc.pid})")
 
-    state_path.write_text(json.dumps({
-        "processes": processes,
+    # Claim slot BEFORE spawning so concurrent `wt -d` sees us.
+    started_at = time.time()
+    base_state = {
+        "processes": [],
         "repo": str(repo),
         "repo_name": repo.name,
         "worktree": str(w.path),
         "branch": w.branch,
         "label": w.label,
         "target": target,
-        "started_at": time.time(),
-    }, indent=2))
+        "started_at": started_at,
+        "pending": True,
+    }
+    _write_state(state_path, base_state)
+
+    log_fp = open(log_path, "ab")
+    processes: list[dict] = []
+    try:
+        for name, cmd in spec.commands:
+            proc = subprocess.Popen(
+                cmd,
+                shell=True,
+                cwd=str(w.path),
+                stdin=subprocess.DEVNULL,
+                stdout=log_fp,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            processes.append({"name": name, "pid": proc.pid})
+            info(f"started {name} (pid {proc.pid})")
+    except Exception as exc:
+        # Spawn failed mid-group: kill whatever we started, remove state.
+        for p in processes:
+            if _group_alive(p["pid"]):
+                _terminate_group(p["pid"])
+        state_path.unlink(missing_ok=True)
+        log_fp.close()
+        return err(f"failed to spawn: {exc}")
+
+    log_fp.close()
+
+    # Finalize: replace pending state with real PIDs.
+    base_state["processes"] = processes
+    del base_state["pending"]
+    _write_state(state_path, base_state)
+
     info(f"log: {log_path}")
     return 0
 
@@ -637,6 +672,10 @@ def cmd_stop(args) -> int:
     if not st:
         info(f"{w.label} is not running (no state file)")
         return 0
+    if st.get("pending"):
+        info(f"{w.label} launch in progress, removing pending state")
+        state_path.unlink(missing_ok=True)
+        return 0
     if not _state_any_alive(st):
         pids = ", ".join(str(p["pid"]) for p in _state_pids(st))
         info(f"{w.label} pid(s) {pids} stale, cleaning state file")
@@ -660,7 +699,8 @@ def cmd_status(_args) -> int:
         if not st:
             sf.unlink(missing_ok=True)
             continue
-        if not _state_any_alive(st):
+        is_pending = st.get("pending", False)
+        if not is_pending and not _state_any_alive(st):
             sf.unlink(missing_ok=True)
             continue
         try:
@@ -668,10 +708,14 @@ def cmd_status(_args) -> int:
         except (TypeError, ValueError):
             uptime = "?"
         nice = f"{st.get('repo_name', '?')}/{st.get('label', '?')}"
-        for p in _state_pids(st):
-            if _group_alive(int(p["pid"])):
-                rows.append((nice, p.get("name", "?"), str(p["pid"]), uptime, st.get("worktree", "?")))
-                found = True
+        if is_pending:
+            rows.append((nice, st.get("target", "?"), "starting", uptime, st.get("worktree", "?")))
+            found = True
+        else:
+            for p in _state_pids(st):
+                if _group_alive(int(p["pid"])):
+                    rows.append((nice, p.get("name", "?"), str(p["pid"]), uptime, st.get("worktree", "?")))
+                    found = True
     if not found:
         print("no detached apps running")
         return 0
