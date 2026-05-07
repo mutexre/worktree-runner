@@ -1,3 +1,5 @@
+![wt: git-worktree dispatcher — run targets in the right worktree from any terminal](docs/header.png)
+
 # wt
 
 Git-worktree dispatcher. Resolves a ticket id (e.g. `SPLAT-12`) or branch
@@ -126,6 +128,17 @@ ticket_style: linear       # case-insensitive prefix-N (default)
 ticket_style: github       # numeric IDs: 123-fix-bug -> #123
 ticket_style: 'TASK_(\d+)' # any regex; 1 group = full token, 2 groups = prefix-N
 ```
+
+## Working with docs assets
+
+PNG images under `docs/` must stay below 500 KB. After adding or replacing
+an image, run:
+
+```bash
+./scripts/optimise-images.sh
+```
+
+CI will fail the build if any `docs/*.png` exceeds the budget.
 
 ## License
 
