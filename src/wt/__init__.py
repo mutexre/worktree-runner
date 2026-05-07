@@ -398,12 +398,24 @@ def _get_boot_id() -> str:
     return "unknown"
 
 
+_C_ENV: Optional[dict] = None
+
+
+def _c_env() -> dict:
+    """Cached environ with LC_ALL=C for locale-stable ps(1) output."""
+    global _C_ENV
+    if _C_ENV is None:
+        _C_ENV = {**os.environ, "LC_ALL": "C", "LC_TIME": "C"}
+    return _C_ENV
+
+
 def _get_process_start_time(pid: int) -> Optional[str]:
     """Process start time via ps(1), or None if the process doesn't exist."""
     try:
         r = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart="],
             capture_output=True, text=True, check=True,
+            env=_c_env(),
         )
         val = r.stdout.strip()
         return val if val else None
@@ -422,16 +434,22 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def _proc_alive(pgid: int, start_time: Optional[str] = None) -> bool:
-    """Like _group_alive but verifies start_time to guard against PID reuse."""
+def _proc_alive(pgid: int, start_time: Optional[str] = None) -> Optional[bool]:
+    """Check if a process group is alive with PID-reuse guard.
+
+    Returns True (verified alive), False (dead or PID reused), or None
+    (alive at OS level but start_time couldn't be verified — unknown).
+    """
     if not _group_alive(pgid):
         return False
     if start_time is None:
         return True
     current = _get_process_start_time(pgid)
     if current is None:
+        return None
+    if current != start_time:
         return False
-    return current == start_time
+    return True
 
 
 def _is_stale_boot(st: dict) -> bool:
@@ -480,10 +498,31 @@ def _state_pids(st: dict) -> list[dict]:
     return []
 
 
+_LEGACY_WARNED: set[str] = set()
+
+
+def _warn_legacy(st: dict) -> None:
+    """Warn once per label when state file lacks PID-reuse guard fields."""
+    label = st.get("label", "?")
+    if label in _LEGACY_WARNED:
+        return
+    has_boot = st.get("boot_id") not in (None, "unknown")
+    has_start = all("start_time" in p for p in _state_pids(st))
+    if not has_boot or not has_start:
+        info(f"{label}: legacy state — pid-reuse guard limited; "
+             f"restart with `wt -d` to upgrade")
+        _LEGACY_WARNED.add(label)
+
+
 def _state_any_alive(st: dict) -> bool:
     if _is_stale_boot(st):
         return False
-    return any(_proc_alive(int(p["pid"]), p.get("start_time")) for p in _state_pids(st))
+    _warn_legacy(st)
+    for p in _state_pids(st):
+        status = _proc_alive(int(p["pid"]), p.get("start_time"))
+        if status is not False:
+            return True
+    return False
 
 
 def _state_terminate_all(st: dict) -> bool:
@@ -492,7 +531,8 @@ def _state_terminate_all(st: dict) -> bool:
     ok = True
     for p in _state_pids(st):
         pid = int(p["pid"])
-        if _proc_alive(pid, p.get("start_time")):
+        status = _proc_alive(pid, p.get("start_time"))
+        if status is not False:
             if not _terminate_group(pid):
                 ok = False
     return ok
@@ -501,10 +541,14 @@ def _state_terminate_all(st: dict) -> bool:
 def _state_alive_pids_str(st: dict) -> str:
     if _is_stale_boot(st):
         return ""
-    return ", ".join(
-        str(p["pid"]) for p in _state_pids(st)
-        if _proc_alive(int(p["pid"]), p.get("start_time"))
-    )
+    parts: list[str] = []
+    for p in _state_pids(st):
+        status = _proc_alive(int(p["pid"]), p.get("start_time"))
+        if status is True:
+            parts.append(str(p["pid"]))
+        elif status is None:
+            parts.append(f"{p['pid']}(?)")
+    return ", ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -739,8 +783,12 @@ def cmd_status(_args) -> int:
             uptime = "?"
         nice = f"{st.get('repo_name', '?')}/{st.get('label', '?')}"
         for p in _state_pids(st):
-            if _group_alive(int(p["pid"])):
+            status = _proc_alive(int(p["pid"]), p.get("start_time"))
+            if status is True:
                 rows.append((nice, p.get("name", "?"), str(p["pid"]), uptime, st.get("worktree", "?")))
+                found = True
+            elif status is None:
+                rows.append((nice, p.get("name", "?"), f"{p['pid']}(?)", uptime, st.get("worktree", "?")))
                 found = True
     if not found:
         print("no detached apps running")

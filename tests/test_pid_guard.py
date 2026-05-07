@@ -126,10 +126,10 @@ class TestProcAlive:
             assert wt._proc_alive(100, None) is True
 
     def test_ps_fails_for_alive_pid(self):
-        """ps can't read the process despite os.killpg succeeding — treat as dead."""
+        """ps can't read the process despite os.killpg succeeding → unknown (None)."""
         with mock.patch.object(wt, "_group_alive", return_value=True), \
              mock.patch.object(wt, "_get_process_start_time", return_value=None):
-            assert wt._proc_alive(100, LSTART) is False
+            assert wt._proc_alive(100, LSTART) is None
 
 
 # ---------------------------------------------------------------------------
@@ -302,12 +302,12 @@ class TestEdgeCases:
             assert wt._state_any_alive(st) is True
 
     def test_ps_fails_at_check_time(self):
-        """ps unavailable — can't verify start_time, treat as dead (safe default)."""
+        """ps unavailable → unknown, treated as alive (safe: keeps entry visible)."""
         st = _make_state(boot_id=BOOT_A)
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
              mock.patch.object(wt, "_group_alive", return_value=True), \
              mock.patch.object(wt, "_get_process_start_time", return_value=None):
-            assert wt._state_any_alive(st) is False
+            assert wt._state_any_alive(st) is True
 
     def test_race_process_exits_between_check_and_signal(self):
         """Process dies between _proc_alive and os.killpg(SIGTERM) — graceful."""
@@ -327,3 +327,139 @@ class TestEdgeCases:
     def test_is_stale_boot_different(self):
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_B):
             assert wt._is_stale_boot({"boot_id": BOOT_A}) is True
+
+
+# ---------------------------------------------------------------------------
+# 9. Locale stability (C1)
+# ---------------------------------------------------------------------------
+
+class TestLocaleStability:
+    def test_ps_called_with_lc_all_c(self):
+        """_get_process_start_time must pass LC_ALL=C to ps."""
+        fake = subprocess.CompletedProcess([], 0, stdout="  Thu May  7 00:55:20 2026\n")
+        with mock.patch("subprocess.run", return_value=fake) as mock_run:
+            wt._get_process_start_time(12345)
+        call_kwargs = mock_run.call_args
+        env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert env is not None, "ps must be called with explicit env"
+        assert env.get("LC_ALL") == "C"
+        assert env.get("LC_TIME") == "C"
+
+
+# ---------------------------------------------------------------------------
+# 10. cmd_status uses _proc_alive per row (H1)
+# ---------------------------------------------------------------------------
+
+class TestStatusPerRow:
+    def test_mixed_alive_and_reused(self, cache_dir, capsys):
+        """Multi-process state: one alive, one reused → only alive shown."""
+        st = {
+            "boot_id": BOOT_A,
+            "processes": [
+                {"name": "server", "pid": 100, "start_time": LSTART},
+                {"name": "worker", "pid": 200, "start_time": LSTART},
+            ],
+            "repo_name": "fakerepo", "label": "TEST-1",
+            "worktree": "/tmp/wt", "started_at": 1700000000.0,
+        }
+        _write_state(cache_dir, "fakerepo-abc__TEST-1", st)
+
+        def fake_group_alive(pgid):
+            return True
+
+        def fake_start_time(pid):
+            return LSTART if pid == 100 else LSTART_OTHER
+
+        with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
+             mock.patch.object(wt, "_group_alive", side_effect=fake_group_alive), \
+             mock.patch.object(wt, "_get_process_start_time", side_effect=fake_start_time):
+            wt.cmd_status(None)
+        out = capsys.readouterr().out
+        assert "100" in out
+        assert "200" not in out
+
+
+# ---------------------------------------------------------------------------
+# 11. Unknown state display (H2)
+# ---------------------------------------------------------------------------
+
+class TestUnknownStateDisplay:
+    def test_unknown_shown_with_question_mark_in_status(self, cache_dir, capsys):
+        """Process alive at OS level but ps fails → shown with (?) marker."""
+        st = _make_state(boot_id=BOOT_A)
+        _write_state(cache_dir, "fakerepo-abc__TEST-1", st)
+        with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
+             mock.patch.object(wt, "_group_alive", return_value=True), \
+             mock.patch.object(wt, "_get_process_start_time", return_value=None):
+            wt.cmd_status(None)
+        out = capsys.readouterr().out
+        assert "(?)" in out
+        assert "fakerepo" in out
+
+    def test_unknown_still_gets_signal_on_stop(self):
+        """Unknown process should still be terminated (safe default)."""
+        st = _make_state(boot_id=BOOT_A)
+        with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
+             mock.patch.object(wt, "_group_alive", return_value=True), \
+             mock.patch.object(wt, "_get_process_start_time", return_value=None), \
+             mock.patch.object(wt, "_terminate_group", return_value=True) as mock_term:
+            wt._state_terminate_all(st)
+        mock_term.assert_called_once_with(99999)
+
+    def test_alive_pids_str_unknown_marker(self):
+        """_state_alive_pids_str shows (?) for unverifiable entries."""
+        st = _make_state(boot_id=BOOT_A)
+        with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
+             mock.patch.object(wt, "_group_alive", return_value=True), \
+             mock.patch.object(wt, "_get_process_start_time", return_value=None):
+            result = wt._state_alive_pids_str(st)
+        assert "(?)" in result
+
+
+# ---------------------------------------------------------------------------
+# 12. Legacy state warning (H3)
+# ---------------------------------------------------------------------------
+
+class TestLegacyWarning:
+    @pytest.fixture(autouse=True)
+    def _clear_warned(self):
+        wt._LEGACY_WARNED.clear()
+        yield
+        wt._LEGACY_WARNED.clear()
+
+    def test_warns_on_missing_boot_id(self, capsys):
+        st = {"pid": 99999, "target": "run", "label": "OLD-1", "started_at": 1.0}
+        with mock.patch.object(wt, "_group_alive", return_value=True):
+            wt._state_any_alive(st)
+        err = capsys.readouterr().err
+        assert "legacy state" in err
+        assert "pid-reuse guard limited" in err
+
+    def test_warns_on_missing_start_time(self, capsys):
+        st = {
+            "boot_id": BOOT_A, "label": "HALF-1",
+            "processes": [{"name": "server", "pid": 99999}],
+            "started_at": 1.0,
+        }
+        with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
+             mock.patch.object(wt, "_group_alive", return_value=True):
+            wt._state_any_alive(st)
+        err = capsys.readouterr().err
+        assert "legacy state" in err
+
+    def test_no_warning_for_complete_state(self, capsys):
+        st = _make_state(boot_id=BOOT_A)
+        with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
+             mock.patch.object(wt, "_group_alive", return_value=True), \
+             mock.patch.object(wt, "_get_process_start_time", return_value=LSTART):
+            wt._state_any_alive(st)
+        err = capsys.readouterr().err
+        assert "legacy" not in err
+
+    def test_warns_only_once_per_label(self, capsys):
+        st = {"pid": 99999, "target": "run", "label": "DUP-1", "started_at": 1.0}
+        with mock.patch.object(wt, "_group_alive", return_value=True):
+            wt._state_any_alive(st)
+            wt._state_any_alive(st)
+        err = capsys.readouterr().err
+        assert err.count("legacy state") == 1
