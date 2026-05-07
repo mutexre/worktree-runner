@@ -21,6 +21,9 @@ classifiers = [
     "Topic :: Software Development :: Version Control :: Git",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
 [project.urls]
 Homepage = "https://github.com/mutexre/worktree-runner"
 Issues = "https://github.com/mutexre/worktree-runner/issues"
