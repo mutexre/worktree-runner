@@ -375,12 +375,44 @@ def _read_state(path: Path) -> Optional[dict]:
         return None
 
 
-def _group_alive(pgid: int) -> bool:
-    """True if the process group (any descendant) still has a member alive.
+def _get_boot_id() -> str:
+    """Stable identifier for the current boot. Falls back to 'unknown'."""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["sysctl", "-n", "kern.boottime"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            m = re.search(r"sec = (\d+)", out)
+            if m:
+                return m.group(1)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    else:
+        try:
+            for line in Path("/proc/stat").read_text().splitlines():
+                if line.startswith("btime "):
+                    return line.split()[1]
+        except (OSError, IndexError):
+            pass
+    return "unknown"
 
-    `wt -d` launches each command with start_new_session=True, which puts the
-    spawned shell and all its descendants in a process group whose leader pid
-    equals the spawned shell's pid. So we use the recorded pid as the pgid."""
+
+def _get_process_start_time(pid: int) -> Optional[str]:
+    """Process start time via ps(1), or None if the process doesn't exist."""
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True, text=True, check=True,
+        )
+        val = r.stdout.strip()
+        return val if val else None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _group_alive(pgid: int) -> bool:
+    """True if the process group has a member alive (raw OS check, no reuse guard)."""
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -388,6 +420,29 @@ def _group_alive(pgid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _proc_alive(pgid: int, start_time: Optional[str] = None) -> bool:
+    """Like _group_alive but verifies start_time to guard against PID reuse."""
+    if not _group_alive(pgid):
+        return False
+    if start_time is None:
+        return True
+    current = _get_process_start_time(pgid)
+    if current is None:
+        return False
+    return current == start_time
+
+
+def _is_stale_boot(st: dict) -> bool:
+    """True if the state file is from a different boot (all PIDs meaningless)."""
+    recorded = st.get("boot_id")
+    if not recorded or recorded == "unknown":
+        return False
+    current = _get_boot_id()
+    if current == "unknown":
+        return False
+    return recorded != current
 
 
 def _terminate_group(pgid: int, timeout: float = 5.0) -> bool:
@@ -403,7 +458,7 @@ def _terminate_group(pgid: int, timeout: float = 5.0) -> bool:
         time.sleep(0.1)
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return True
     time.sleep(0.2)
     return not _group_alive(pgid)
@@ -426,20 +481,30 @@ def _state_pids(st: dict) -> list[dict]:
 
 
 def _state_any_alive(st: dict) -> bool:
-    return any(_group_alive(int(p["pid"])) for p in _state_pids(st))
+    if _is_stale_boot(st):
+        return False
+    return any(_proc_alive(int(p["pid"]), p.get("start_time")) for p in _state_pids(st))
 
 
 def _state_terminate_all(st: dict) -> bool:
+    if _is_stale_boot(st):
+        return True
     ok = True
     for p in _state_pids(st):
-        if _group_alive(int(p["pid"])):
-            if not _terminate_group(int(p["pid"])):
+        pid = int(p["pid"])
+        if _proc_alive(pid, p.get("start_time")):
+            if not _terminate_group(pid):
                 ok = False
     return ok
 
 
 def _state_alive_pids_str(st: dict) -> str:
-    return ", ".join(str(p["pid"]) for p in _state_pids(st) if _group_alive(int(p["pid"])))
+    if _is_stale_boot(st):
+        return ""
+    return ", ".join(
+        str(p["pid"]) for p in _state_pids(st)
+        if _proc_alive(int(p["pid"]), p.get("start_time"))
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -592,10 +657,15 @@ def cmd_launch_detached(args) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        processes.append({"name": name, "pid": proc.pid})
+        entry: dict = {"name": name, "pid": proc.pid}
+        stime = _get_process_start_time(proc.pid)
+        if stime:
+            entry["start_time"] = stime
+        processes.append(entry)
         info(f"started {name} (pid {proc.pid})")
 
     state_path.write_text(json.dumps({
+        "boot_id": _get_boot_id(),
         "processes": processes,
         "repo": str(repo),
         "repo_name": repo.name,
