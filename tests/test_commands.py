@@ -44,7 +44,8 @@ class TestWtInit:
 
 class TestWtInstallSkill:
     def test_installs_symlink(self, tmp_path):
-        src = Path(__file__).resolve().parent.parent / "src" / "wt" / "skills" / "init-wt"
+        import wt as wt_mod
+        src = Path(wt_mod.__file__).resolve().parent / "skills" / "init-wt"
         if not src.is_dir():
             pytest.skip("bundled skill not found")
 
@@ -56,7 +57,8 @@ class TestWtInstallSkill:
         assert target.resolve() == src.resolve()
 
     def test_refuses_overwrite_without_force(self, tmp_path):
-        src = Path(__file__).resolve().parent.parent / "src" / "wt" / "skills" / "init-wt"
+        import wt as wt_mod
+        src = Path(wt_mod.__file__).resolve().parent / "skills" / "init-wt"
         if not src.is_dir():
             pytest.skip("bundled skill not found")
 
@@ -68,7 +70,8 @@ class TestWtInstallSkill:
         assert rc == 1
 
     def test_force_replaces_existing(self, tmp_path):
-        src = Path(__file__).resolve().parent.parent / "src" / "wt" / "skills" / "init-wt"
+        import wt as wt_mod
+        src = Path(wt_mod.__file__).resolve().parent / "skills" / "init-wt"
         if not src.is_dir():
             pytest.skip("bundled skill not found")
 
