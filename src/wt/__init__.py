@@ -375,12 +375,56 @@ def _read_state(path: Path) -> Optional[dict]:
         return None
 
 
-def _group_alive(pgid: int) -> bool:
-    """True if the process group (any descendant) still has a member alive.
+def _get_boot_id() -> str:
+    """Stable identifier for the current boot. Falls back to 'unknown'."""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["sysctl", "-n", "kern.boottime"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            m = re.search(r"sec = (\d+)", out)
+            if m:
+                return m.group(1)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    else:
+        try:
+            for line in Path("/proc/stat").read_text().splitlines():
+                if line.startswith("btime "):
+                    return line.split()[1]
+        except (OSError, IndexError):
+            pass
+    return "unknown"
 
-    `wt -d` launches each command with start_new_session=True, which puts the
-    spawned shell and all its descendants in a process group whose leader pid
-    equals the spawned shell's pid. So we use the recorded pid as the pgid."""
+
+_C_ENV: Optional[dict] = None
+
+
+def _c_env() -> dict:
+    """Cached environ with LC_ALL=C for locale-stable ps(1) output."""
+    global _C_ENV
+    if _C_ENV is None:
+        _C_ENV = {**os.environ, "LC_ALL": "C", "LC_TIME": "C"}
+    return _C_ENV
+
+
+def _get_process_start_time(pid: int) -> Optional[str]:
+    """Process start time via ps(1), or None if the process doesn't exist."""
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True, text=True, check=True,
+            env=_c_env(),
+        )
+        val = r.stdout.strip()
+        return val if val else None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _group_alive(pgid: int) -> bool:
+    """True if the process group has a member alive (raw OS check, no reuse guard)."""
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -388,6 +432,35 @@ def _group_alive(pgid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _proc_alive(pgid: int, start_time: Optional[str] = None) -> Optional[bool]:
+    """Check if a process group is alive with PID-reuse guard.
+
+    Returns True (verified alive), False (dead or PID reused), or None
+    (alive at OS level but start_time couldn't be verified — unknown).
+    """
+    if not _group_alive(pgid):
+        return False
+    if start_time is None:
+        return True
+    current = _get_process_start_time(pgid)
+    if current is None:
+        return None
+    if current != start_time:
+        return False
+    return True
+
+
+def _is_stale_boot(st: dict) -> bool:
+    """True if the state file is from a different boot (all PIDs meaningless)."""
+    recorded = st.get("boot_id")
+    if not recorded or recorded == "unknown":
+        return False
+    current = _get_boot_id()
+    if current == "unknown":
+        return False
+    return recorded != current
 
 
 def _terminate_group(pgid: int, timeout: float = 5.0) -> bool:
@@ -403,7 +476,7 @@ def _terminate_group(pgid: int, timeout: float = 5.0) -> bool:
         time.sleep(0.1)
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return True
     time.sleep(0.2)
     return not _group_alive(pgid)
@@ -425,21 +498,57 @@ def _state_pids(st: dict) -> list[dict]:
     return []
 
 
+_LEGACY_WARNED: set[str] = set()
+
+
+def _warn_legacy(st: dict) -> None:
+    """Warn once per label when state file lacks PID-reuse guard fields."""
+    label = st.get("label", "?")
+    if label in _LEGACY_WARNED:
+        return
+    has_boot = st.get("boot_id") not in (None, "unknown")
+    has_start = all("start_time" in p for p in _state_pids(st))
+    if not has_boot or not has_start:
+        info(f"{label}: legacy state — pid-reuse guard limited; "
+             f"restart with `wt -d` to upgrade")
+        _LEGACY_WARNED.add(label)
+
+
 def _state_any_alive(st: dict) -> bool:
-    return any(_group_alive(int(p["pid"])) for p in _state_pids(st))
+    if _is_stale_boot(st):
+        return False
+    _warn_legacy(st)
+    for p in _state_pids(st):
+        status = _proc_alive(int(p["pid"]), p.get("start_time"))
+        if status is not False:
+            return True
+    return False
 
 
 def _state_terminate_all(st: dict) -> bool:
+    if _is_stale_boot(st):
+        return True
     ok = True
     for p in _state_pids(st):
-        if _group_alive(int(p["pid"])):
-            if not _terminate_group(int(p["pid"])):
+        pid = int(p["pid"])
+        status = _proc_alive(pid, p.get("start_time"))
+        if status is not False:
+            if not _terminate_group(pid):
                 ok = False
     return ok
 
 
 def _state_alive_pids_str(st: dict) -> str:
-    return ", ".join(str(p["pid"]) for p in _state_pids(st) if _group_alive(int(p["pid"])))
+    if _is_stale_boot(st):
+        return ""
+    parts: list[str] = []
+    for p in _state_pids(st):
+        status = _proc_alive(int(p["pid"]), p.get("start_time"))
+        if status is True:
+            parts.append(str(p["pid"]))
+        elif status is None:
+            parts.append(f"{p['pid']}(?)")
+    return ", ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -592,10 +701,15 @@ def cmd_launch_detached(args) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        processes.append({"name": name, "pid": proc.pid})
+        entry: dict = {"name": name, "pid": proc.pid}
+        stime = _get_process_start_time(proc.pid)
+        if stime:
+            entry["start_time"] = stime
+        processes.append(entry)
         info(f"started {name} (pid {proc.pid})")
 
     state_path.write_text(json.dumps({
+        "boot_id": _get_boot_id(),
         "processes": processes,
         "repo": str(repo),
         "repo_name": repo.name,
@@ -669,8 +783,12 @@ def cmd_status(_args) -> int:
             uptime = "?"
         nice = f"{st.get('repo_name', '?')}/{st.get('label', '?')}"
         for p in _state_pids(st):
-            if _group_alive(int(p["pid"])):
+            status = _proc_alive(int(p["pid"]), p.get("start_time"))
+            if status is True:
                 rows.append((nice, p.get("name", "?"), str(p["pid"]), uptime, st.get("worktree", "?")))
+                found = True
+            elif status is None:
+                rows.append((nice, p.get("name", "?"), f"{p['pid']}(?)", uptime, st.get("worktree", "?")))
                 found = True
     if not found:
         print("no detached apps running")
