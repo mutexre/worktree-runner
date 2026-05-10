@@ -187,6 +187,17 @@ No conda env required — `pip install -e .` works.
   5. User will say "Start WR-XX" or "Next" or "Continue" to begin new work.
 - **VIOLATION OF THIS RULE IS CRITICAL ERROR.**
 
+**CRITICAL — PUSH PRESERVATION RULE:**
+- **Local-only commits are unsafe.** Worktree deletion, machine loss, or agent process termination can destroy them. Local agents have already lost work this way.
+- **Push the feature branch as soon as there are meaningful commits** — at the latest when moving the ticket to "In Review". The branch must be visible on origin before the user is asked to review.
+- **On user approval ("done", "looks good", "approved", "ship it", "merge it"), the agent MUST IMMEDIATELY and without further prompting:**
+  1. Merge to main with `--no-ff`
+  2. `git push origin main`
+  3. Move the ticket to Done in JIRA
+  - User approval IS the trigger. Do not wait for "now push" as a separate instruction.
+- **Never end a turn with unpushed commits on a branch the user has approved.** If something blocks pushing (network, auth), surface the error explicitly; never silently leave work local.
+- **VIOLATION OF THIS RULE IS CRITICAL ERROR.**
+
 **JIRA Ticket Management:**
 - **Always discuss** ticket creation/deletion with user before executing.
 - JIRA project: **WR** (Worktree Runner)
@@ -222,6 +233,7 @@ No conda env required — `pip install -e .` works.
 
 4. **Complete implementation**
    - Commit all changes.
+   - **Push the feature branch to origin** (`git push -u origin feature/WR-XX-description`). The branch must be on origin before the user is asked to review. See PUSH PRESERVATION RULE.
    - Update JIRA: Move to **"In Review"** state.
    - Notify user: "WR-XX ready for testing".
 
@@ -229,13 +241,15 @@ No conda env required — `pip install -e .` works.
    - User tests functionality.
    - If issues found, user comments and returns to "In Progress".
 
-6. **Merge to main** (only after user approval)
+6. **Merge to main** (automatic on user approval — no separate prompt)
    ```bash
-   git checkout main
+   git checkout main && git pull
    git merge --no-ff feature/WR-XX-description
-   git push
+   git push origin main
    ```
-   **CRITICAL**: Always use `--no-ff` flag for explicit merge commits.
+   - **Approval ("done", "looks good", "approved", "ship it", "merge it") is the trigger.** Do NOT wait for the user to say "now push" or "now merge" as a separate step.
+   - **CRITICAL**: Always use `--no-ff` flag for explicit merge commits.
+   - **CRITICAL**: `git push origin main` happens in the same turn as the merge. Never end a turn with an unpushed merge on main.
 
 7. **Close ticket**
    - Update JIRA: Move to **"Done"**.
