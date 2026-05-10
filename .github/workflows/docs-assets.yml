@@ -1,0 +1,25 @@
+name: docs-assets
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-image-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check docs/*.png size budget
+        run: |
+          MAX_BYTES=$(grep -m1 '^MAX_BYTES=' scripts/optimise-images.sh | cut -d= -f2)
+          fail=0
+          shopt -s nullglob
+          for f in docs/*.png; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt "$MAX_BYTES" ]; then
+              echo "::error::$f is $size bytes (limit $MAX_BYTES). Run ./scripts/optimise-images.sh and commit the result."
+              fail=1
+            fi
+          done
+          exit $fail
