@@ -808,6 +808,134 @@ def cmd_stop(args) -> int:
     return 0 if ok else err(f"failed to stop all processes for {w.label}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Process-tree helpers (WR-9)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class _PsRow:
+    pid: int
+    ppid: int
+    etime: str
+    cmd: str
+
+
+def _ps_group(pgid: int) -> list[_PsRow]:
+    """Return all processes whose PGID equals *pgid* via `ps`.
+
+    Uses PGID-scoped query so we only see what `wt stop` can actually signal.
+    Processes that escaped via setsid() have a different PGID and are omitted
+    intentionally (see WR-1 for the limitations discussion).
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-g", str(pgid), "-o", "pid=,ppid=,etime=,command="],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
+
+    rows: list[_PsRow] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append(_PsRow(
+                pid=int(parts[0]),
+                ppid=int(parts[1]),
+                etime=parts[2],
+                cmd=parts[3],
+            ))
+        except ValueError:
+            continue
+    return rows
+
+
+def _render_process_tree(rows: list[_PsRow], pgid: int) -> str:
+    """Render *rows* as an ASCII tree rooted at the process whose PID == pgid.
+
+    Processes whose PPID is not in the set are treated as roots (there should
+    be exactly one: the session leader).  Connectors follow the classic
+    tree(1) style: ├── for non-last children, └── for the last child.
+    """
+    if not rows:
+        return ""
+
+    by_pid: dict[int, _PsRow] = {r.pid: r for r in rows}
+    pids_in_set: set[int] = set(by_pid)
+    children: dict[int, list[int]] = {r.pid: [] for r in rows}
+    roots: list[int] = []
+
+    for r in rows:
+        if r.ppid in pids_in_set:
+            children[r.ppid].append(r.pid)
+        else:
+            roots.append(r.pid)
+
+    cmd_width = 80
+    lines: list[str] = []
+
+    def _node_line(r: _PsRow) -> str:
+        cmd = r.cmd if len(r.cmd) <= cmd_width else r.cmd[:cmd_width - 1] + "…"
+        return f"[{r.pid}]  {r.etime:>12}  {cmd}"
+
+    def _walk(pid: int, prefix: str, is_last: bool) -> None:
+        connector = "└── " if is_last else "├── "
+        lines.append(prefix + connector + _node_line(by_pid[pid]))
+        child_prefix = prefix + ("    " if is_last else "│   ")
+        kids = children[pid]
+        for i, kid in enumerate(kids):
+            _walk(kid, child_prefix, i == len(kids) - 1)
+
+    for i, root_pid in enumerate(roots):
+        lines.append(_node_line(by_pid[root_pid]))
+        kids = children[root_pid]
+        for j, kid in enumerate(kids):
+            _walk(kid, "", j == len(kids) - 1)
+
+    return "\n".join(lines)
+
+
+def cmd_tree(args) -> int:
+    """Print the process tree for each group under a running worktree."""
+    repo = _current_repo()
+    w = _resolve(repo, args.ticket, _style_for(repo))
+    sid = _state_id(repo, w)
+    st = _read_state(_state_file(sid))
+
+    if not st:
+        return err(f"{w.label}: no state file (not running?)")
+
+    procs = _state_pids(st)
+    if not procs:
+        return err(f"{w.label}: state file has no process entries")
+
+    any_output = False
+    for p in procs:
+        pgid = int(p["pid"])
+        name = p.get("name", "?")
+        if not _group_alive(pgid):
+            print(f"[{name}] pgid {pgid}  (exited)")
+            continue
+        rows = _ps_group(pgid)
+        if not rows:
+            print(f"[{name}] pgid {pgid}  (no ps output — process may have exited)")
+            continue
+        print(f"[{name}] pgid {pgid}")
+        tree_str = _render_process_tree(rows, pgid)
+        for line in tree_str.splitlines():
+            print("  " + line)
+        any_output = True
+
+    if any_output:
+        print()
+        print("Note: processes that called setsid() have a different PGID and are")
+        print("not shown here — they are also unreachable by `wt stop` (see WR-1).")
+    return 0
+
+
 def cmd_status(_args) -> int:
     if not CACHE_DIR.exists():
         print("no detached apps running")
@@ -847,7 +975,7 @@ def cmd_status(_args) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _RESERVED = {
-    "ls", "list", "path", "logs", "stop", "status",
+    "ls", "list", "path", "logs", "stop", "status", "tree",
     "init", "install-skill", "help", "-h", "--help",
 }
 
@@ -872,6 +1000,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  wt status               show running detached apps (across all repos)\n"
             "  wt logs SPLAT-12        tail detached log\n"
             "  wt path SPLAT-12        print absolute worktree path\n"
+            "  wt tree SPLAT-12        print process tree of running group\n"
         ),
     )
     sub = p.add_subparsers(dest="cmd")
@@ -911,6 +1040,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_status = sub.add_parser("status", help="show running detached apps (any repo)")
     sp_status.set_defaults(func=cmd_status)
+
+    sp_tree = sub.add_parser("tree", help="print process tree of a running worktree group")
+    sp_tree.add_argument("ticket")
+    sp_tree.set_defaults(func=cmd_tree)
 
     sub.add_parser("help", help="show this help message").set_defaults(
         func=lambda a: (p.print_help() or 0)
