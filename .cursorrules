@@ -258,13 +258,9 @@ No conda env required — `pip install -e .` works.
    - **Keep feature branches** (do not delete after merge).
 
 **JIRA Transitions:**
-- **ALWAYS call `getTransitionsForJiraIssue` BEFORE any transition.** Verify the target state name matches intent. Do NOT hardcode IDs from this file or memory — they vary per project and can drift; verify per call.
-- **Match by destination state name (`transitions[].to.name`), not by the transition's own label (`transitions[].name`).** The two can disagree in casing/wording (e.g. transition label `"IN REVIEW"` → state `"In Review"`). The state name is the source of truth.
-- WR (Worktree Runner) uses a **4-state workflow** (as of 2026-05-11):
-  - 11: To Do
-  - 21: In Progress
-  - **2:  In Review** ← low ID; Jira reused an empty slot when this state was added. Do NOT assume IDs are sequential or ordered.
-  - 31: Done
+- **ALWAYS call `getTransitionsForJiraIssue` BEFORE any transition.** Do NOT hardcode IDs — they vary per project, can be non-sequential, and can drift. Verify per call.
+- **Match by destination state name (`transitions[].to.name`).** Do not match on the transition's own label (`transitions[].name`) — casing and wording can disagree. The destination state name is the source of truth.
+- WR (Worktree Runner) workflow states: To Do, In Progress, In Review, Done.
 
 **CRITICAL — "In Review" fallback rule:**
 - Applies when **any** project lacks an "In Review" state (e.g. fresh team-managed Jira projects ship with only To Do / In Progress / Done by default). WR currently has the state, but the rule remains in force for cross-project work and future projects.
