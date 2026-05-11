@@ -19,6 +19,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -375,6 +376,24 @@ def _read_state(path: Path) -> Optional[dict]:
         return None
 
 
+def _write_state_atomic(path: Path, data: dict) -> None:
+    """Write JSON state via tmp file + os.replace for crash safety."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _get_boot_id() -> str:
     """Stable identifier for the current boot. Falls back to 'unknown'."""
     if sys.platform == "darwin":
@@ -578,8 +597,19 @@ def cmd_init(_args) -> int:
         return 0
 
     data: dict = {"targets": targets}
-    with open(cfg_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    fd, tmp = tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, cfg_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
     info(f"wrote {cfg_path}")
     return 0
@@ -691,34 +721,49 @@ def cmd_launch_detached(args) -> int:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     log_fp = open(log_path, "ab")
     processes: list[dict] = []
-    for name, cmd in spec.commands:
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            cwd=str(w.path),
-            stdin=subprocess.DEVNULL,
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        entry: dict = {"name": name, "pid": proc.pid}
-        stime = _get_process_start_time(proc.pid)
-        if stime:
-            entry["start_time"] = stime
-        processes.append(entry)
-        info(f"started {name} (pid {proc.pid})")
+    started_at = time.time()
+    boot_id = _get_boot_id()
 
-    state_path.write_text(json.dumps({
-        "boot_id": _get_boot_id(),
-        "processes": processes,
-        "repo": str(repo),
-        "repo_name": repo.name,
-        "worktree": str(w.path),
-        "branch": w.branch,
-        "label": w.label,
-        "target": target,
-        "started_at": time.time(),
-    }, indent=2))
+    def _persist() -> None:
+        _write_state_atomic(state_path, {
+            "boot_id": boot_id,
+            "processes": processes,
+            "repo": str(repo),
+            "repo_name": repo.name,
+            "worktree": str(w.path),
+            "branch": w.branch,
+            "label": w.label,
+            "target": target,
+            "started_at": started_at,
+        })
+
+    try:
+        for name, cmd in spec.commands:
+            proc = subprocess.Popen(
+                cmd,
+                shell=True,
+                cwd=str(w.path),
+                stdin=subprocess.DEVNULL,
+                stdout=log_fp,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            entry: dict = {"name": name, "pid": proc.pid}
+            stime = _get_process_start_time(proc.pid)
+            if stime:
+                entry["start_time"] = stime
+            processes.append(entry)
+            _persist()
+            info(f"started {name} (pid {proc.pid})")
+    except Exception as exc:
+        log_fp.close()
+        if processes:
+            info(f"partial launch ({len(processes)}/{len(spec.commands)}): {exc}")
+            info("use `wt stop` to clean up started processes")
+            return 1
+        raise
+
+    log_fp.close()
     info(f"log: {log_path}")
     return 0
 
