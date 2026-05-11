@@ -234,8 +234,9 @@ No conda env required — `pip install -e .` works.
 4. **Complete implementation**
    - Commit all changes.
    - **Push the feature branch to origin** (`git push -u origin feature/WR-XX-description`). The branch must be on origin before the user is asked to review. See PUSH PRESERVATION RULE.
-   - Update JIRA: Move to **"In Review"** state.
-   - Notify user: "WR-XX ready for testing".
+   - Call `getTransitionsForJiraIssue` to discover the project's actual states. Do NOT assume "In Review" exists.
+   - Update JIRA: move to **"In Review"** if it exists; otherwise **leave at "In Progress"** (see "In Review" fallback rule). **NEVER skip ahead to "Done".**
+   - Notify user: "WR-XX ready for testing on branch `feature/WR-XX-description`".
 
 5. **User testing** (user responsibility)
    - User tests functionality.
@@ -256,12 +257,20 @@ No conda env required — `pip install -e .` works.
    - Add final comment with merge commit hash.
    - **Keep feature branches** (do not delete after merge).
 
-**JIRA Transition IDs (WR Project):**
-- Verify with `getTransitionsForJiraIssue` on first issue — next-gen projects typically use:
+**JIRA Transitions:**
+- **ALWAYS call `getTransitionsForJiraIssue` BEFORE any transition.** Verify the target state name matches intent. Do NOT hardcode IDs from this file or memory — they vary per project and can drift; verify per call.
+- WR (Worktree Runner) uses a **3-state workflow with NO "In Review"**:
   - 11: To Do
   - 21: In Progress
-  - 31: In Review
-  - 41: Done
+  - 31: Done
+
+**CRITICAL — "In Review" fallback rule:**
+- **When the project has no "In Review" state** (as in WR):
+  - Use **"In Progress"** as the holding state after implementation.
+  - **NEVER transition to "Done" without explicit user approval** ("Testing OK", "Looks good", "Approved", "Done", "Ship it", etc.).
+  - Stop at "In Progress" and notify the user that work is ready for review on the pushed branch.
+- **Never invent custom states.** If the desired state doesn't exist, stop and tell the user — do not silently substitute "Done" or any other terminal state.
+- This applies regardless of how complete the work feels; only the user's words trigger the move to "Done".
 
 **Git Rules:**
 - Main branch must be **always stable**.
