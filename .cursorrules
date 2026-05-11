@@ -187,17 +187,6 @@ No conda env required — `pip install -e .` works.
   5. User will say "Start WR-XX" or "Next" or "Continue" to begin new work.
 - **VIOLATION OF THIS RULE IS CRITICAL ERROR.**
 
-**CRITICAL — PUSH PRESERVATION RULE:**
-- **Local-only commits are unsafe.** Worktree deletion, machine loss, or agent process termination can destroy them. Local agents have already lost work this way.
-- **Push the feature branch as soon as there are meaningful commits** — at the latest when moving the ticket to "In Review". The branch must be visible on origin before the user is asked to review.
-- **On user approval ("done", "looks good", "approved", "ship it", "merge it"), the agent MUST IMMEDIATELY and without further prompting:**
-  1. Merge to main with `--no-ff`
-  2. `git push origin main`
-  3. Move the ticket to Done in JIRA
-  - User approval IS the trigger. Do not wait for "now push" as a separate instruction.
-- **Never end a turn with unpushed commits on a branch the user has approved.** If something blocks pushing (network, auth), surface the error explicitly; never silently leave work local.
-- **VIOLATION OF THIS RULE IS CRITICAL ERROR.**
-
 **JIRA Ticket Management:**
 - **Always discuss** ticket creation/deletion with user before executing.
 - JIRA project: **WR** (Worktree Runner)
@@ -233,43 +222,34 @@ No conda env required — `pip install -e .` works.
 
 4. **Complete implementation**
    - Commit all changes.
-   - **Push the feature branch to origin** (`git push -u origin feature/WR-XX-description`). The branch must be on origin before the user is asked to review. See PUSH PRESERVATION RULE.
-   - Call `getTransitionsForJiraIssue` to discover the project's actual states. Do NOT assume "In Review" exists.
-   - Update JIRA: move to **"In Review"** if it exists; otherwise **leave at "In Progress"** (see "In Review" fallback rule). **NEVER skip ahead to "Done".**
-   - Notify user: "WR-XX ready for testing on branch `feature/WR-XX-description`".
+   - Update JIRA: Move to **"In Review"** state.
+   - Notify user: "WR-XX ready for testing".
 
 5. **User testing** (user responsibility)
    - User tests functionality.
    - If issues found, user comments and returns to "In Progress".
 
-6. **Merge to main** (automatic on user approval — no separate prompt)
+6. **Merge to main** (only after user approval)
    ```bash
-   git checkout main && git pull
+   git checkout main
    git merge --no-ff feature/WR-XX-description
-   git push origin main
+   git push
    ```
-   - **Approval ("done", "looks good", "approved", "ship it", "merge it") is the trigger.** Do NOT wait for the user to say "now push" or "now merge" as a separate step.
-   - **CRITICAL**: Always use `--no-ff` flag for explicit merge commits.
-   - **CRITICAL**: `git push origin main` happens in the same turn as the merge. Never end a turn with an unpushed merge on main.
+   **CRITICAL**: Always use `--no-ff` flag for explicit merge commits.
 
 7. **Close ticket**
    - Update JIRA: Move to **"Done"**.
    - Add final comment with merge commit hash.
    - **Keep feature branches** (do not delete after merge).
 
-**JIRA Transitions:**
-- **ALWAYS call `getTransitionsForJiraIssue` BEFORE any transition.** Do NOT hardcode IDs — they vary per project, can be non-sequential, and can drift. Verify per call.
-- **Match by destination state name (`transitions[].to.name`).** Do not match on the transition's own label (`transitions[].name`) — casing and wording can disagree. The destination state name is the source of truth.
-- WR (Worktree Runner) workflow states: To Do, In Progress, In Review, Done.
-
-**CRITICAL — "In Review" fallback rule:**
-- Applies when **any** project lacks an "In Review" state (e.g. fresh team-managed Jira projects ship with only To Do / In Progress / Done by default). WR currently has the state, but the rule remains in force for cross-project work and future projects.
-- **When "In Review" is absent:**
-  - Use **"In Progress"** as the holding state after implementation.
-  - **NEVER transition to "Done" without explicit user approval** ("Testing OK", "Looks good", "Approved", "Done", "Ship it", etc.).
-  - Stop at "In Progress" and notify the user that work is ready for review on the pushed branch.
-- **Never invent custom states.** If the desired state doesn't exist, stop and tell the user — do not silently substitute "Done" or any other terminal state.
-- This applies regardless of how complete the work feels; only the user's words trigger the move to "Done".
+**JIRA Transition IDs (WR Project):**
+- **MANDATORY**: ALWAYS call `getTransitionsForJiraIssue` before every transition and confirm
+  the `name` field of the chosen transition matches the intended state. NEVER assume IDs.
+- Known IDs (verify each time — they can change):
+  - 11: To Do
+  - 21: In Progress
+  - 31: In Review
+  - 41: Done
 
 **Git Rules:**
 - Main branch must be **always stable**.
