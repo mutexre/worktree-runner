@@ -974,11 +974,176 @@ def cmd_status(_args) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# wt add: fetch remote branch → create local worktree
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _branch_slug(branch: str) -> str:
+    """Lowercase branch name → filesystem-safe slug (non-alnum → '-')."""
+    slug = re.sub(r"[^A-Za-z0-9-]", "-", branch).lower()
+    return re.sub(r"-{2,}", "-", slug).strip("-")
+
+
+def _ls_remote_branches(repo: Path, remote: str = "origin") -> dict[str, str]:
+    """Return {branch_name: sha} for all branches on *remote*.
+
+    Raises subprocess.CalledProcessError on network / auth failure.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-remote", "--heads", remote],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        msg = (result.stderr.strip() or "git ls-remote failed").splitlines()[0]
+        die(f"cannot reach remote '{remote}': {msg}")
+
+    branches: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            sha, ref = parts
+            name = ref.removeprefix("refs/heads/")
+            branches[name] = sha
+    return branches
+
+
+def _resolve_remote_branch(
+    arg: str,
+    remote_branches: dict[str, str],
+    repo: Path,
+    style: TicketStyle,
+) -> str:
+    """Resolve *arg* to a single remote branch name or die."""
+    # Strip remote prefix (e.g. "origin/foo" → "foo").
+    for prefix in ("origin/", "upstream/"):
+        if arg.startswith(prefix):
+            bare = arg[len(prefix):]
+            if bare in remote_branches:
+                return bare
+            die(f"branch '{bare}' not found on remote (after stripping '{prefix}')")
+
+    # Exact match first.
+    if arg in remote_branches:
+        return arg
+
+    # Ticket-style expansion: build candidate ticket strings.
+    ticket_candidates: set[str] = {arg, arg.upper()}
+    if arg.isdigit():
+        if style.expand_digits:
+            ticket_candidates.update(style.expand_digits(arg))
+        if style.prefix_of:
+            prefix = _infer_ticket_prefix(repo, style)
+            if prefix:
+                ticket_candidates.add(f"{prefix}-{arg}".upper())
+
+    # Match remote branch names that contain any candidate ticket string.
+    matched: list[str] = []
+    for branch in remote_branches:
+        m = style.regex.search(branch)
+        if m:
+            canonical = style.canonicalize(m)
+            if canonical in ticket_candidates or canonical.upper() in ticket_candidates:
+                matched.append(branch)
+
+    if len(matched) == 1:
+        return matched[0]
+    if len(matched) > 1:
+        candidates = "\n  ".join(matched)
+        die(
+            f"'{arg}' matches multiple remote branches:\n  {candidates}\n"
+            f"Re-run with the exact branch name."
+        )
+
+    # Fuzzy substring fallback.
+    arg_l = arg.lower()
+    fuzzy = [b for b in remote_branches if arg_l in b.lower()]
+    if len(fuzzy) == 1:
+        return fuzzy[0]
+    if len(fuzzy) > 1:
+        candidates = "\n  ".join(fuzzy)
+        die(
+            f"'{arg}' matches multiple remote branches:\n  {candidates}\n"
+            f"Re-run with the exact branch name."
+        )
+
+    die(f"no remote branch matches '{arg}'. Try `git fetch && git branch -r`.")
+
+
+def cmd_add(args) -> int:
+    repo = _current_repo()
+    style = _style_for(repo)
+    arg: str = args.ref
+    remote = "origin"
+
+    info(f"fetching from {remote} …")
+    fetch_args = ["git", "-C", str(repo), "fetch", remote]
+    # Targeted fetch is faster when the argument looks like an exact branch.
+    if "/" not in arg and not arg.isdigit():
+        # Might be a ticket token – fetch all to ensure we have the latest refs.
+        pass
+    fetch_result = subprocess.run(fetch_args, capture_output=True, text=True)
+    if fetch_result.returncode != 0:
+        msg = (fetch_result.stderr.strip() or "git fetch failed").splitlines()[0]
+        die(f"fetch failed: {msg}")
+
+    remote_branches = _ls_remote_branches(repo, remote)
+    branch = _resolve_remote_branch(arg, remote_branches, repo, style)
+
+    # Determine worktree path.
+    if args.path:
+        wt_path = Path(args.path).expanduser().resolve()
+    else:
+        slug = _branch_slug(branch)
+        wt_path = repo.parent / f"{repo.name}-{slug}"
+
+    # Idempotency: worktree already registered at this path.
+    existing = _list_worktrees(repo, style)
+    for w in existing:
+        if w.path.resolve() == wt_path.resolve():
+            info(f"already added at {wt_path}")
+            print(str(wt_path))
+            return 0
+        if w.branch == branch:
+            info(f"branch '{branch}' already checked out at {w.path}")
+            info(f"already added at {w.path}")
+            print(str(w.path))
+            return 0
+
+    # Check for a stale local branch with the same name.
+    local_branches_out = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", branch],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if local_branches_out:
+        die(
+            f"local branch '{branch}' already exists; "
+            f"delete it (`git branch -D {branch}`) and retry."
+        )
+
+    # Create the worktree tracking the remote branch.
+    info(f"creating worktree {wt_path}  (branch: {branch})")
+    wt_result = subprocess.run(
+        [
+            "git", "-C", str(repo), "worktree", "add",
+            "--track", "-b", branch,
+            str(wt_path),
+            f"{remote}/{branch}",
+        ],
+        capture_output=True, text=True,
+    )
+    if wt_result.returncode != 0:
+        msg = (wt_result.stderr.strip() or "git worktree add failed")
+        die(f"failed to create worktree: {msg}")
+
+    print(str(wt_path))
+    return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Argparse plumbing
 # ─────────────────────────────────────────────────────────────────────────────
 
 _RESERVED = {
-    "ls", "list", "path", "logs", "stop", "status", "tree",
+    "add", "ls", "list", "path", "logs", "stop", "status", "tree",
     "init", "install-skill", "help", "-h", "--help",
 }
 
@@ -993,6 +1158,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "  wt init                 create .wt.yaml for this repo\n"
             "  wt install-skill        install the init-wt agent skill\n"
             "  wt                      list worktrees of this repo\n"
+            "  wt add WR-12            fetch + create worktree for remote branch WR-12\n"
+            "  wt add cursor/foo       fetch + create worktree for branch cursor/foo\n"
+            "  wt add WR-12 --path /tmp/my-wt  use a custom worktree path\n"
             "  wt SPLAT-12             launch 'run' target for SPLAT-12 (foreground)\n"
             "  wt 12                   same, fuzzy match (auto-detects SPLAT- prefix)\n"
             "  wt -d SPLAT-12          launch detached (supports service groups)\n"
@@ -1010,6 +1178,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_init = sub.add_parser("init", help="create .wt.yaml config for this repo")
     sp_init.set_defaults(func=cmd_init)
+
+    sp_add = sub.add_parser(
+        "add",
+        help="fetch a remote branch and create a local worktree for it",
+    )
+    sp_add.add_argument(
+        "ref",
+        help="ticket id (e.g. WR-12), branch name (cursor/foo), or origin/branch",
+    )
+    sp_add.add_argument(
+        "--path", default=None,
+        help="worktree directory (default: ../<repo>-<branch-slug>)",
+    )
+    sp_add.set_defaults(func=cmd_add)
 
     sp_skill = sub.add_parser(
         "install-skill",
