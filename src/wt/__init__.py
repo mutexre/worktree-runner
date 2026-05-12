@@ -762,6 +762,123 @@ def cmd_path(args) -> int:
     return 0
 
 
+_SHELL_INIT_BEGIN = "# BEGIN wt shell integration"
+_SHELL_INIT_END = "# END wt shell integration"
+_SHELL_INIT_NOTE = "(managed by wt shell-init; do not edit by hand)"
+
+
+def _shell_snippet_bash_zsh() -> str:
+    return (
+        "wt() {\n"
+        '  if [ "$1" = "cd" ] && [ -n "$2" ]; then\n'
+        "    local _wt_path\n"
+        '    _wt_path=$(command wt path "$2") || return $?\n'
+        '    cd "$_wt_path"\n'
+        "  else\n"
+        '    command wt "$@"\n'
+        "  fi\n"
+        "}\n"
+    )
+
+
+def _shell_snippet_fish() -> str:
+    return (
+        f"{_SHELL_INIT_BEGIN} {_SHELL_INIT_NOTE}\n"
+        "function wt --wraps wt\n"
+        "    if test (count $argv) -ge 2; and test \"$argv[1]\" = cd\n"
+        "        set -l _wt_path (command wt path $argv[2])\n"
+        "        or return\n"
+        "        cd $_wt_path\n"
+        "    else\n"
+        "        command wt $argv\n"
+        "    end\n"
+        "end\n"
+        f"{_SHELL_INIT_END} {_SHELL_INIT_NOTE}\n"
+    )
+
+
+def _fish_conf_d_path() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "fish" / "conf.d" / "wt.fish"
+
+
+def _is_managed_wt_shell_file(content: str) -> bool:
+    return _SHELL_INIT_BEGIN in content and _SHELL_INIT_END in content
+
+
+def cmd_cd(args) -> int:
+    """Print resolved worktree path; hint on stderr when stderr is a TTY."""
+    repo = _current_repo()
+    w = _resolve(repo, args.ticket, _style_for(repo))
+    print(str(w.path))
+    if sys.stderr.isatty():
+        info(
+            "shell cannot cd from a child process — run "
+            '`eval "$(wt shell-init zsh)"` (or bash/fish; see `wt shell-init --help`) '
+            "so `wt cd` changes this shell's directory, or use: "
+            f'cd "$(wt path {args.ticket})"'
+        )
+    return 0
+
+
+def cmd_shell_init(args) -> int:
+    shell: str = args.shell
+    if args.install and args.uninstall:
+        return err("use only one of --install / --uninstall")
+    if args.install or args.uninstall:
+        if shell in ("bash", "zsh"):
+            return err(
+                f"`wt shell-init {shell} --install` is not supported — bash/zsh have no "
+                "standard drop-in path. Print the snippet and paste into your rc file:\n"
+                f"  eval \"$(wt shell-init {shell})\""
+            )
+
+    if shell in ("bash", "zsh"):
+        text = _shell_snippet_bash_zsh()
+        if args.uninstall:
+            return err("`wt shell-init bash|zsh --uninstall` is not applicable (no installed file).")
+        sys.stdout.write(text)
+        return 0
+
+    # fish
+    path = _fish_conf_d_path()
+    content = _shell_snippet_fish()
+
+    if args.uninstall:
+        if not path.exists():
+            info(f"nothing to remove ({path})")
+            return 0
+        existing = path.read_text()
+        if not _is_managed_wt_shell_file(existing):
+            return err(
+                f"refusing to remove unrelated file: {path} "
+                "(missing wt sentinels; delete manually if needed)"
+            )
+        path.unlink()
+        info(f"removed {path}")
+        return 0
+
+    if args.install:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            cur = path.read_text()
+            if cur == content:
+                info(f"unchanged ({path})")
+                return 0
+            if not _is_managed_wt_shell_file(cur) and not args.force:
+                return err(
+                    f"refusing to overwrite unrelated file: {path}. "
+                    "Use --force to replace, or remove/rename the file first."
+                )
+        path.write_text(content)
+        info(f"wrote {path}")
+        return 0
+
+    sys.stdout.write(content)
+    return 0
+
+
 def cmd_logs(args) -> int:
     repo = _current_repo()
     w = _resolve(repo, args.ticket, _style_for(repo))
@@ -1279,8 +1396,8 @@ def cmd_add(args) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _RESERVED = {
-    "add", "ls", "list", "path", "logs", "stop", "status", "tree",
-    "init", "install-skill", "help", "-h", "--help",
+    "add", "ls", "list", "path", "cd", "logs", "stop", "status", "tree",
+    "init", "install-skill", "shell-init", "help", "-h", "--help",
 }
 
 
@@ -1307,6 +1424,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  wt status               show running detached apps (across all repos)\n"
             "  wt logs SPLAT-12        tail detached log\n"
             "  wt path SPLAT-12        print absolute worktree path\n"
+            "  wt cd SPLAT-12          same as path; tty stderr hints shell-init\n"
+            "  wt shell-init zsh       print shell function (eval in ~/.zshrc)\n"
             "  wt tree SPLAT-12        print process tree of running group\n"
         ),
     )
@@ -1349,6 +1468,36 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_path = sub.add_parser("path", help="print worktree path")
     sp_path.add_argument("ticket")
     sp_path.set_defaults(func=cmd_path)
+
+    sp_cd = sub.add_parser(
+        "cd",
+        help="print worktree path (use shell-init so the shell can actually cd)",
+    )
+    sp_cd.add_argument("ticket")
+    sp_cd.set_defaults(func=cmd_cd)
+
+    sp_sh = sub.add_parser(
+        "shell-init",
+        help="emit wt shell wrapper (bash/zsh: stdout; fish: --install to conf.d)",
+    )
+    sp_sh.add_argument(
+        "shell",
+        choices=["bash", "zsh", "fish"],
+        help="target shell",
+    )
+    sp_sh.add_argument(
+        "--install", action="store_true",
+        help="fish only: write ~/.config/fish/conf.d/wt.fish (or $XDG_CONFIG_HOME)",
+    )
+    sp_sh.add_argument(
+        "--uninstall", action="store_true",
+        help="fish only: remove the drop-in file if managed by wt",
+    )
+    sp_sh.add_argument(
+        "--force", action="store_true",
+        help="fish --install: replace a non-wt file at the target path",
+    )
+    sp_sh.set_defaults(func=cmd_shell_init)
 
     sp_logs = sub.add_parser("logs", help="tail detached log")
     sp_logs.add_argument("ticket")
