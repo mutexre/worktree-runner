@@ -299,20 +299,35 @@ def _resolve_target(config: Optional[dict], target_name: str) -> RunSpec:
 # Ticket / branch resolution within current repo
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _ticket_candidates(arg: str, repo: Path, style: TicketStyle) -> set[str]:
+    """Build the set of ticket strings *arg* could resolve to.
+
+    Includes the arg itself (raw + uppercased), digit-expansions provided by
+    the style (e.g. github "#123"), and — if *arg* is bare digits and the
+    style has a prefix — the inferred-prefix expansion (e.g. "12" → "WR-12").
+
+    Used by both `_resolve` (against local worktrees) and
+    `_resolve_remote_branch` (against `git ls-remote` output) so the two
+    resolution paths cannot drift.
+    """
+    candidates: set[str] = {arg, arg.upper()}
+    if arg.isdigit():
+        if style.expand_digits:
+            candidates.update(style.expand_digits(arg))
+        if style.prefix_of:
+            prefix = _infer_ticket_prefix(repo, style)
+            if prefix:
+                candidates.add(f"{prefix}-{arg}".upper())
+    return candidates
+
+
 def _resolve(repo: Path, arg: str, style: TicketStyle) -> Worktree:
     pool = _list_worktrees(repo, style)
     if not pool:
         die(f"no worktrees in {repo}")
 
     arg_l = arg.lower()
-    ticket_candidates: set[str] = {arg, arg.upper()}
-    if arg.isdigit():
-        if style.expand_digits:
-            ticket_candidates.update(style.expand_digits(arg))
-        if style.prefix_of:
-            prefix = _infer_ticket_prefix(repo, style)
-            if prefix:
-                ticket_candidates.add(f"{prefix}-{arg}".upper())
+    ticket_candidates = _ticket_candidates(arg, repo, style)
 
     exact: list[Worktree] = []
     for w in pool:
@@ -1021,21 +1036,11 @@ def _resolve_remote_branch(
                 return bare
             die(f"branch '{bare}' not found on remote (after stripping '{prefix}')")
 
-    # Exact match first.
     if arg in remote_branches:
         return arg
 
-    # Ticket-style expansion: build candidate ticket strings.
-    ticket_candidates: set[str] = {arg, arg.upper()}
-    if arg.isdigit():
-        if style.expand_digits:
-            ticket_candidates.update(style.expand_digits(arg))
-        if style.prefix_of:
-            prefix = _infer_ticket_prefix(repo, style)
-            if prefix:
-                ticket_candidates.add(f"{prefix}-{arg}".upper())
+    ticket_candidates = _ticket_candidates(arg, repo, style)
 
-    # Match remote branch names that contain any candidate ticket string.
     matched: list[str] = []
     for branch in remote_branches:
         m = style.regex.search(branch)
@@ -1075,12 +1080,10 @@ def cmd_add(args) -> int:
     remote = "origin"
 
     info(f"fetching from {remote} …")
-    fetch_args = ["git", "-C", str(repo), "fetch", remote]
-    # Targeted fetch is faster when the argument looks like an exact branch.
-    if "/" not in arg and not arg.isdigit():
-        # Might be a ticket token – fetch all to ensure we have the latest refs.
-        pass
-    fetch_result = subprocess.run(fetch_args, capture_output=True, text=True)
+    fetch_result = subprocess.run(
+        ["git", "-C", str(repo), "fetch", remote],
+        capture_output=True, text=True,
+    )
     if fetch_result.returncode != 0:
         msg = (fetch_result.stderr.strip() or "git fetch failed").splitlines()[0]
         die(f"fetch failed: {msg}")
