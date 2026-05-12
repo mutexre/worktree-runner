@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from tests.conftest import _git, write_wt_yaml
 from wt import main, cmd_install_skill
 
 
@@ -139,6 +140,70 @@ class TestMainEntryPoint:
         monkeypatch.chdir(repo)
         rc = main(["-t", "test", "SPLAT-10"])
         assert rc == 0
+
+    def test_config_always_from_main_worktree(self, repo_with_worktrees, monkeypatch):
+        """Linked checkout's .wt.yaml must not override the main tree's config (WR-11)."""
+        from wt import _current_repo, _load_config, _resolve_target
+
+        repo = repo_with_worktrees["repo"]
+        wt_10 = repo_with_worktrees["wt_10"]
+        write_wt_yaml(repo, {"targets": {"run": "echo MAIN_CFG"}})
+        write_wt_yaml(wt_10, {"targets": {"run": "echo LINKED_CFG"}})
+        monkeypatch.chdir(wt_10)
+        assert _current_repo().resolve() == repo.resolve()
+        cfg = _load_config(_current_repo())
+        spec = _resolve_target(cfg, "run")
+        assert spec.commands[0][1] == "echo MAIN_CFG"
+
+    def test_bare_repo_rejected(self, tmp_path, monkeypatch, capsys):
+        bare = tmp_path / "demo.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", str(bare)],
+            check=True, capture_output=True,
+        )
+        monkeypatch.chdir(bare)
+        with pytest.raises(SystemExit) as ei:
+            main([])
+        assert ei.value.code == 1
+        err = capsys.readouterr().err.lower()
+        assert "bare" in err
+
+    def test_submodule_checkout_rejected(self, tmp_path, monkeypatch, capsys):
+        super_repo = tmp_path / "super"
+        child = tmp_path / "child"
+        super_repo.mkdir()
+        child.mkdir()
+        _git(super_repo, "init", "-b", "main")
+        _git(super_repo, "config", "user.email", "t@test")
+        _git(super_repo, "config", "user.name", "T")
+        (super_repo / "README").write_text("super")
+        _git(super_repo, "add", ".")
+        _git(super_repo, "commit", "-m", "init super")
+
+        _git(child, "init", "-b", "main")
+        _git(child, "config", "user.email", "t@test")
+        _git(child, "config", "user.name", "T")
+        (child / "f").write_text("c")
+        _git(child, "add", ".")
+        _git(child, "commit", "-m", "init child")
+
+        subprocess.run(
+            [
+                "git", "-C", str(super_repo), "-c", "protocol.file.allow=always",
+                "submodule", "add", str(child.resolve()), "submod",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        _git(super_repo, "commit", "-m", "add submodule")
+
+        sub_path = super_repo / "submod"
+        assert sub_path.is_dir()
+        monkeypatch.chdir(sub_path)
+        with pytest.raises(SystemExit) as ei:
+            main([])
+        assert ei.value.code == 1
+        assert "submodule" in capsys.readouterr().err.lower()
 
     def test_help_flag(self, capsys):
         with pytest.raises(SystemExit) as exc:
