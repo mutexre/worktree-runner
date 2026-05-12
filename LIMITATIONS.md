@@ -30,8 +30,9 @@ for automation.
   Kubernetes, etc.
 - **Log management** — Logs grow without rotation or shipping inside `wt`; use
   `logrotate`, `multilog`, journald forwarding, or pipe targets to real log sinks.
-- **Process tree visuals** — `wt status` shows the tracked group leader, not an
-  entire tree snapshot. Use `pstree`, `htop`, or `ps -g <pgid>` when you need depth.
+- **Process tree visuals** — `wt status` shows only the tracked group leader.
+  Use `wt tree <ticket>` for a PGID-scoped ASCII tree, or `pstree`/`htop` for
+  system-wide depth.
 - **Sandboxing / isolation** — Targets inherit the invoking user, environment,
   and working directory semantics of ordinary shell subprocesses (same as running
   the script yourself).
