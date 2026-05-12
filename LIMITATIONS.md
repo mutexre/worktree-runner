@@ -17,11 +17,14 @@ for automation.
 ## Best-effort, not guaranteed
 
 - **Modern state guards (WR-12, after WR-1)** — Current `wt` records `boot_id`
-  when detaching and each leader's process start timestamp from `ps`. Stale JSON
-  from a prior boot is treated as dead before any signals. Within a boot, if the
-  same PID slot is reused by another process, the start-time check fails and
-  `wt status` / `wt stop` do not confuse it with your old job — the usual PID-reuse
-  failure mode from early `wt` is addressed for guarded state files.
+  when detaching and each leader's process start timestamp from `ps`. After a
+  **reboot**, that stored boot id disagrees with the running system, so leftovers
+  in `~/.cache/wt/*.json` are treated as stale (nothing "alive", no signalling)
+  unless you knowingly carry over pre-WR-12 state missing `boot_id`. **Within a
+  boot**, if the kernel recycles the same PID number for a different process, the
+  recorded start time no longer matches `ps` → `wt status`/`wt stop` do not treat
+  that slot as your old detached job — the classic PID-reuse failure mode from early
+  `wt` is covered for guarded state files.
 - **Legacy or unverifiable paths** — State files produced before those fields land
   (or if `start_time`/boot checks cannot run) warn once per label and revert to a
   `killpg`-only interpretation; ambiguity can still surface as `pid(?)` in
