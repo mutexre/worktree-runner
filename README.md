@@ -4,7 +4,8 @@
 
 Git-worktree dispatcher. Resolves a ticket id (e.g. `SPLAT-12`) or branch
 substring to a worktree of the current git repository and runs commands
-defined in `.wt.yaml` there. Tracks detached processes.
+defined in `.wt.yaml` there. Tracks detached processes. **Not** a service
+supervisor — scope and caveats are in [Limitations](#limitations).
 
 ```
 $ wt -d 12
@@ -54,6 +55,52 @@ Then, in any repo, ask your agent to "init wt for this project".
 
 Requirements: Python 3.10+, git >= 2.5.
 
+## Limitations
+
+`wt` tracks processes by POSIX process group leader (spawned with
+`start_new_session=True`). It has no supervising daemon, supervisor socket, or
+stable OS handles beyond PID/PGID. Know these boundaries before relying on it
+for automation.
+
+### Cannot reach
+
+- **Detached daemons** — Programs that call `setsid()` or double-fork to leave
+  the session (typical systemd-style daemons: `gunicorn --daemon`,
+  `celery multi`, most production app servers). They exit our process group;
+  we cannot reliably signal them.
+- **Explicit session breaks** — A target shell that runs `setsid cmd &`
+  (or equivalent) deliberately moves work out of our group.
+
+### Best-effort, not guaranteed
+
+- **PID reuse** — Stale state can, in exceptional cases, make `wt status`
+  falsely report "alive" or make `wt stop` signal the wrong process after PIDs
+  are recycled by the kernel. Discussed further in spike **WR-1**.
+- **Reboot leftovers** — State files surviving a reboot can reference PIDs/PGIDs
+  that the new boot later assigns to unrelated processes; `wt status` and
+  `wt stop --all` may then misbehave until state is swept or invalidated.
+
+### Not in scope (use other tools)
+
+- **Service supervision** — No automatic restart on crash, health checks,
+  resource caps, or liveness probes. Use systemd, supervisord, pm2, Foreman,
+  Kubernetes, etc.
+- **Log management** — Logs grow without rotation or shipping inside `wt`; use
+  `logrotate`, `multilog`, journald forwarding, or pipe targets to real log sinks.
+- **Process tree visuals** — `wt status` shows the tracked group leader, not an
+  entire tree snapshot. Use `pstree`, `htop`, or `ps -g <pgid>` when you need depth.
+- **Sandboxing / isolation** — Targets inherit the invoking user, environment,
+  and working directory semantics of ordinary shell subprocesses (same as running
+  the script yourself).
+
+### Trust model
+
+`.wt.yaml` is source-controlled YAML whose `targets` expand to arbitrary shell
+commands (`shell=True`). Cloning a repository and running `wt` executes whatever
+the config defines — same posture as trusting `Makefile`, `package.json`
+scripts, or `Cargo.toml` hook commands. Treat changes to `.wt.yaml` like any
+other build or automation script in review.
+
 ## Config (`.wt.yaml`)
 
 ```yaml
@@ -80,12 +127,13 @@ groups:
 process. `wt stop 12` terminates all of them. If no `.wt.yaml` exists, `wt`
 falls back to `make <target>`.
 
-Each target is launched in its own process group, so any subprocesses it
-spawns (build watchers, hot-reload workers, npm-spawned children, etc.) are
-tracked together: `wt status` reports the group as alive while any
-descendant is running, and `wt stop` SIGTERMs the entire group. The only
-escape is a process that explicitly calls `setsid()` to detach itself
-(rare for dev tooling).
+Each target is launched as the leader of its own process group, so subprocesses
+it spawns without leaving that group — build watchers, hot-reload helpers,
+npm-spawned children, etc. — stay in the same PGID: `wt status` reflects them as
+alive while any such descendant runs, and `wt stop` SIGTERMs the whole group at
+once. Anything that explicitly escapes the session (see [`setsid()` /
+double-fork daemons](#cannot-reach)) is outside that contract; PID reuse and
+reboot leftovers are [best-effort caveats](#best-effort-not-guaranteed).
 
 ## Commands
 
