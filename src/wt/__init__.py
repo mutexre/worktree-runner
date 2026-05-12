@@ -4,6 +4,12 @@ Operates on the git repository containing the current working directory.
 Resolves a ticket id (or branch substring) to a worktree of the current repo
 and dispatches commands defined in .wt.yaml (or falls back to make <target>).
 
+``.wt.yaml`` is always read from the repository's **main** worktree (resolved
+via ``git rev-parse --git-common-dir``), never from a linked worktree's
+checkout. Branch-specific config files under a linked path are ignored on
+purpose: the same ``wt`` invocation must resolve targets the same way no
+matter which directory you run it from.
+
 Run state lives in ~/.cache/wt/<repo>-<sha8>__<label>.{json,log}.
 The JSON sidecar lets `wt status` enumerate every detached app across every
 repository you've ever launched from.
@@ -156,7 +162,10 @@ def _print_table(rows: list[tuple[str, ...]]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _current_repo() -> Path:
-    """Return the main worktree (common dir) of the repo containing $PWD."""
+    """Return the main worktree directory of the repo containing $PWD.
+
+    Exits with an error in a bare repository or inside a submodule checkout.
+    """
     try:
         common_dir = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
@@ -168,8 +177,36 @@ def _current_repo() -> Path:
     # `--git-common-dir` returns either an absolute path to the main `.git`
     # directory, or `.git` (relative) if we're already in the main repo.
     if cd.name == ".git":
-        return cd.parent
-    return cd
+        root = cd.parent
+    else:
+        root = cd
+
+    try:
+        bare = subprocess.run(
+            ["git", "rev-parse", "--is-bare-repository"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        die("not inside a git repository (cwd: " + str(Path.cwd()) + ")")
+    if bare == "true":
+        die(
+            "wt requires a non-bare repository with a working tree "
+            "(bare repos have no main checkout for .wt.yaml)."
+        )
+
+    spr = subprocess.run(
+        ["git", "rev-parse", "--show-superproject-working-tree"],
+        capture_output=True, text=True,
+    )
+    if spr.returncode == 0:
+        super_wt = spr.stdout.strip()
+        if super_wt:
+            die(
+                "wt cannot run inside a git submodule checkout "
+                f"({Path.cwd()}). Run wt from the superproject tree ({super_wt})."
+            )
+
+    return root
 
 
 def _repo_id(repo: Path) -> str:

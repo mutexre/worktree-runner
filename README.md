@@ -56,6 +56,13 @@ Requirements: Python 3.10+, git >= 2.5.
 
 ## Config (`.wt.yaml`)
 
+`wt` always reads `.wt.yaml` from the **main** worktree of the repository,
+regardless of which linked worktree you invoke it from. A different
+`.wt.yaml` checked out on another branch in a linked path is **ignored by
+design**, so commands like `wt -t test SPLAT-12` resolve targets the same way
+from every directory. (Git only allows adding new linked worktrees from the
+main tree, not from another linked worktree.)
+
 ```yaml
 targets:
   run: python run.py
