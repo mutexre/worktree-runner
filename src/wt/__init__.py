@@ -832,6 +832,7 @@ def _ps_group(pgid: int) -> list[_PsRow]:
             ["ps", "-g", str(pgid), "-o", "pid=,ppid=,etime=,command="],
             capture_output=True,
             text=True,
+            env=_c_env(),
         )
     except FileNotFoundError:
         return []
@@ -916,14 +917,16 @@ def cmd_tree(args) -> int:
     for p in procs:
         pgid = int(p["pid"])
         name = p.get("name", "?")
-        if not _group_alive(pgid):
-            print(f"[{name}] pgid {pgid}  (exited)")
+        alive = _proc_alive(pgid, p.get("start_time"))
+        if alive is False:
+            print(f"[{name}] pgid {pgid}  (exited or PID reused)")
             continue
         rows = _ps_group(pgid)
         if not rows:
             print(f"[{name}] pgid {pgid}  (no ps output — process may have exited)")
             continue
-        print(f"[{name}] pgid {pgid}")
+        marker = " ?" if alive is None else ""
+        print(f"[{name}] pgid {pgid}{marker}")
         tree_str = _render_process_tree(rows, pgid)
         for line in tree_str.splitlines():
             print("  " + line)

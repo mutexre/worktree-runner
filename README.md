@@ -101,6 +101,7 @@ wt stop --all            stop everything, all repos
 wt status                show all detached apps, all repos
 wt logs <ticket>         tail -f the detached log
 wt path <ticket>         print absolute worktree path
+wt tree <ticket>         print process tree of running group (PGID-scoped)
 ```
 
 ## Resolution
