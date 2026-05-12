@@ -177,86 +177,106 @@ No conda env required — `pip install -e .` works.
 
 ### JIRA & Git Workflow (MANDATORY)
 
-**CRITICAL — TICKET PROGRESSION RULE:**
-- **NEVER start a new ticket without explicit user approval after testing the previous one.**
-- After completing implementation and moving ticket to "In Review":
-  1. STOP and wait for user to test.
-  2. User will say "Testing OK", "Looks good", "Approved", or similar.
-  3. ONLY THEN merge to main.
-  4. STOP AGAIN and wait for explicit instruction to start next ticket.
-  5. User will say "Start WR-XX" or "Next" or "Continue" to begin new work.
-- **VIOLATION OF THIS RULE IS CRITICAL ERROR.**
+**This section is the contract. Read it before touching any ticket. Every rule below is CRITICAL — violating any of them is a workflow error.**
 
-**JIRA Ticket Management:**
-- **Always discuss** ticket creation/deletion with user before executing.
+---
+
+#### State machine (memorise)
+
+Every WR ticket moves through these states in this exact order. **Every transition has a specific trigger and a specific required tool call. Missing a transition = workflow violation.**
+
+| # | Trigger (what the user / agent did) | Jira state at start | Required actions (in order) | Jira state at end |
+|---|---|---|---|---|
+| 1 | Agent creates ticket | (none) | `createJiraIssue` (after discussing with user) | **To Do** |
+| 2 | User says "Start WR-XX" / "Next" / "Continue" | To Do | (a) `git checkout main && git pull` (b) `git switch -c feature/WR-XX-…` (c) `getTransitionsForJiraIssue` (d) `transitionJiraIssue` → **In Progress** (e) only NOW begin writing code | **In Progress** |
+| 3 | Agent finished implementing | In Progress | (a) commit (b) `git push -u origin feature/WR-XX-…` (c) `getTransitionsForJiraIssue` (d) `transitionJiraIssue` → **In Review** if it exists, else stay at **In Progress** (e) notify user "WR-XX ready for testing on `feature/WR-XX-…`" | **In Review** (or In Progress) |
+| 4 | User says "done" / "looks good" / "approved" / "ship it" / "merge it" | In Review | (a) `git checkout main && git pull` (b) `git merge --no-ff feature/WR-XX-…` (c) `git push origin main` (d) `getTransitionsForJiraIssue` (e) `transitionJiraIssue` → **Done** (f) STOP and wait for the next "Start WR-YY" instruction | **Done** |
+
+**Before EVERY `transitionJiraIssue` call: run `getTransitionsForJiraIssue` and match by `transitions[].to.name` (destination state). NEVER hardcode transition IDs.**
+
+---
+
+#### CRITICAL — start-of-work rule
+
+When the user instructs you to begin work on a ticket ("Start WR-XX" / "Next" / "Continue" / "work on WR-XX" / "implement WR-XX"), you MUST do these five things **in order, in the same turn, before writing a single line of code**:
+
+1. `git checkout main && git pull`
+2. `git switch -c feature/WR-XX-<short-description>` (or `fix/`, `spike/` per the naming convention below)
+3. `getTransitionsForJiraIssue` on WR-XX to discover the right transition
+4. `transitionJiraIssue` → **In Progress**
+5. (Optional) Post a one-line comment on the ticket: "Started, branch `feature/WR-XX-…`"
+
+Only after these five steps may you begin reading code, designing, or editing files. **No code edits, no design notes, no `Read` tool calls beyond what step 1-5 require, while the ticket is still in "To Do".**
+
+If the ticket is already in "In Progress" (e.g. you're resuming work), skip the transition and go straight to coding. But always check the current state first with `getJiraIssue`.
+
+---
+
+#### CRITICAL — push preservation rule
+
+- **Local-only commits are unsafe.** Worktree deletion, machine loss, or agent process termination can destroy them. Local agents have already lost work this way.
+- **Push the feature branch to origin** as soon as there are meaningful commits, and at the latest when transitioning the ticket to "In Review". The branch must be visible on origin before asking the user to review.
+- **On user approval, push main in the same turn as the merge.** No "now push" prompt needed — approval IS the trigger.
+- **Never end a turn with unpushed commits on a branch the user has approved.** If push fails (auth, network), surface the error explicitly; never silently leave work local.
+
+---
+
+#### CRITICAL — ticket progression rule
+
+- **NEVER start a new ticket without explicit user approval to do so.**
+- After moving a ticket to "In Review" (or holding at "In Progress" if no In Review state):
+  1. STOP and wait for the user to test.
+  2. User will say "Testing OK", "Looks good", "Approved", "Done", "Ship it", "Merge it", or similar.
+  3. ONLY THEN merge to main + push + transition to Done (state-machine step 4).
+  4. STOP AGAIN and wait for explicit instruction to start the next ticket.
+  5. User will say "Start WR-YY", "Next", or "Continue" to begin new work.
+
+---
+
+#### CRITICAL — "In Review" fallback rule
+
+- Applies when any project lacks an "In Review" state. WR currently has it, but the rule remains in force for future projects and cross-project work.
+- **When "In Review" is absent:**
+  - Hold the ticket at **"In Progress"** after implementation. Do NOT move to "Done".
+  - NEVER transition to "Done" without explicit user approval words ("Testing OK", "Looks good", "Approved", "Done", "Ship it", etc.).
+- **Never invent custom states.** If a needed state doesn't exist, stop and tell the user — never silently substitute "Done" or any other terminal state.
+
+---
+
+#### JIRA Ticket Management
+
+- **Always discuss** ticket creation / deletion / re-scoping with user before executing.
 - JIRA project: **WR** (Worktree Runner)
 - Site: `mutexre.atlassian.net`
 - Cloud ID: `c5732911-9ca0-495f-9851-70b43964e51f`
 - Issue types: Epic, Task, Subtask
-- Update tickets with **concise comments** on progress/blockers.
-- Access via Atlassian MCP tools.
+- WR states (verify per call): To Do, In Progress, In Review, Done
+- Update tickets with **concise comments** on progress and blockers (one or two sentences each, not essays).
+- Access via Atlassian MCP tools (`getJiraIssue`, `createJiraIssue`, `editJiraIssue`, `getTransitionsForJiraIssue`, `transitionJiraIssue`, etc.).
 
-**Branch Naming Convention:**
+---
+
+#### Branch Naming Convention
+
 - Format: `{type}/{ticket-id}-{short-description}`
+- `type` ∈ {`feature`, `fix`, `spike`, `chore`, `docs`}
 - Examples:
   - `feature/WR-10-wt-cd-command`
   - `fix/WR-2-service-group-atomicity`
   - `spike/WR-1-pid-reuse-investigation`
 
-**Development Workflow:**
-1. **Create ticket** (discuss with user first)
-   - Write description with acceptance criteria.
-   - Set priority, labels.
-   - Move to "To Do" status.
+One branch per ticket. Never reuse a branch across tickets. Never put work for two tickets on one branch.
 
-2. **Create branch** from main
-   ```bash
-   git checkout main && git pull
-   git switch -c feature/WR-XX-description
-   ```
+---
 
-3. **Implement** changes
-   - Commit frequently with descriptive messages.
-   - Reference ticket in commits: "WR-XX: Description".
-   - Update JIRA with progress comments.
+#### Git Rules
 
-4. **Complete implementation**
-   - Commit all changes.
-   - Update JIRA: Move to **"In Review"** state.
-   - Notify user: "WR-XX ready for testing".
-
-5. **User testing** (user responsibility)
-   - User tests functionality.
-   - If issues found, user comments and returns to "In Progress".
-
-6. **Merge to main** (only after user approval)
-   ```bash
-   git checkout main
-   git merge --no-ff feature/WR-XX-description
-   git push
-   ```
-   **CRITICAL**: Always use `--no-ff` flag for explicit merge commits.
-
-7. **Close ticket**
-   - Update JIRA: Move to **"Done"**.
-   - Add final comment with merge commit hash.
-   - **Keep feature branches** (do not delete after merge).
-
-**JIRA Transition IDs (WR Project):**
-- **MANDATORY**: ALWAYS call `getTransitionsForJiraIssue` before every transition and confirm
-  the `name` field of the chosen transition matches the intended state. NEVER assume IDs.
-- Known IDs (verify each time — they can change):
-  - 11: To Do
-  - 21: In Progress
-  - 31: In Review
-  - 41: Done
-
-**Git Rules:**
-- Main branch must be **always stable**.
+- Main must be **always stable**.
 - Never merge unverified code to main.
-- Commit messages: descriptive, reference WR-XX.
-- Never force push to main/master without explicit user request.
-- Create separate branches for each ticket.
+- Always `--no-ff` when merging a feature branch to main (explicit merge commits).
+- Commit messages: descriptive, reference WR-XX (e.g. `WR-10: add wt cd command`).
+- Never force push to main without explicit user request.
+- Keep feature branches after merge (do not delete; they're cheap and serve as PR history).
 
 ## Quick Commands
 
@@ -281,5 +301,5 @@ wt -t install-skill <ticket>  # symlink the bundled init-wt skill
 
 ---
 
-**Last Updated**: 2026-05-05
+**Last Updated**: 2026-05-12
 **Review Before**: Every major change to process tracking, state files, or resolution semantics.
