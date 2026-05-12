@@ -613,37 +613,44 @@ def _sweep_exits() -> None:
     if not CACHE_DIR.exists():
         return
     for sf in CACHE_DIR.glob("*.json"):
-        st = _read_state(sf)
-        if not st:
-            continue
-        if st.get("stopping"):
-            continue
-        if _is_stale_boot(st):
-            continue
-        procs = _state_pids(st)
-        if not procs:
-            continue
-
-        already_recorded: set[int] = {e["pid"] for e in st.get("exits", [])}
-        new_exits: list[dict] = []
-        for p in procs:
-            pid = int(p["pid"])
-            if pid in already_recorded:
+        try:
+            st = _read_state(sf)
+            if not st:
                 continue
-            if _proc_alive(pid, p.get("start_time")) is False:
-                log_path = sf.with_suffix(".log")
-                new_exits.append({
-                    "name": p.get("name", "run"),
-                    "pid": pid,
-                    "exit_code": None,
-                    "exited_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "log_tail": _read_log_tail(log_path),
-                })
+            if st.get("stopping"):
+                continue
+            if _is_stale_boot(st):
+                continue
+            procs = _state_pids(st)
+            if not procs:
+                continue
 
-        if new_exits:
-            updated = dict(st)
-            updated["exits"] = st.get("exits", []) + new_exits
-            _write_state_atomic(sf, updated)
+            already_recorded: set[int] = {e["pid"] for e in st.get("exits", [])}
+            new_exits: list[dict] = []
+            for p in procs:
+                pid = int(p["pid"])
+                if pid in already_recorded:
+                    continue
+                if _proc_alive(pid, p.get("start_time")) is False:
+                    log_path = sf.with_suffix(".log")
+                    # exit_code is always None: wt is not the parent of detached
+                    # processes (start_new_session=True puts them in their own
+                    # session), so waitpid returns ECHILD.  WR-19 (push-based
+                    # watcher) is the path to recovering the actual exit code.
+                    new_exits.append({
+                        "name": p.get("name", "run"),
+                        "pid": pid,
+                        "exit_code": None,
+                        "exited_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "log_tail": _read_log_tail(log_path),
+                    })
+
+            if new_exits:
+                updated = dict(st)
+                updated["exits"] = st.get("exits", []) + new_exits
+                _write_state_atomic(sf, updated)
+        except OSError as exc:
+            info(f"sweep: skipping {sf.name}: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
