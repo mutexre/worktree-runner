@@ -4,7 +4,8 @@
 
 Git-worktree dispatcher. Resolves a ticket id (e.g. `SPLAT-12`) or branch
 substring to a worktree of the current git repository and runs commands
-defined in `.wt.yaml` there. Tracks detached processes.
+defined in `.wt.yaml` there. Tracks detached processes. **Not** a service
+supervisor — see [LIMITATIONS.md](LIMITATIONS.md) for scope and caveats.
 
 ```
 $ wt -d 12
@@ -87,12 +88,13 @@ groups:
 process. `wt stop 12` terminates all of them. If no `.wt.yaml` exists, `wt`
 falls back to `make <target>`.
 
-Each target is launched in its own process group, so any subprocesses it
-spawns (build watchers, hot-reload workers, npm-spawned children, etc.) are
-tracked together: `wt status` reports the group as alive while any
-descendant is running, and `wt stop` SIGTERMs the entire group. The only
-escape is a process that explicitly calls `setsid()` to detach itself
-(rare for dev tooling).
+Each target is launched as the leader of its own process group, so subprocesses
+it spawns without leaving that group — build watchers, hot-reload helpers,
+npm-spawned children, etc. — stay in the same PGID: `wt status` reflects them as
+alive while any such descendant runs, and `wt stop` SIGTERMs the whole group at
+once. Anything that explicitly escapes the session (see [`setsid()` /
+double-fork daemons](LIMITATIONS.md#cannot-reach)) is outside that contract; PID
+reuse and reboot leftovers are [best-effort caveats](LIMITATIONS.md#best-effort-not-guaranteed).
 
 ## Commands
 
