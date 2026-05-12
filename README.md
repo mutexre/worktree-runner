@@ -98,7 +98,7 @@ wt -d <ticket> --force   replace running detached
 wt -t <target> <ticket>  run a specific target
 wt stop <ticket>         stop detached (SIGTERM, SIGKILL after 5s)
 wt stop --all            stop everything, all repos
-wt status                show all detached apps, all repos; reports crashes
+wt status                show all detached apps, all repos
 wt logs <ticket>         tail -f the detached log
 wt path <ticket>         print absolute worktree path
 wt tree <ticket>         print process tree of running group (PGID-scoped)
