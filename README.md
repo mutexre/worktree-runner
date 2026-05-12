@@ -92,6 +92,7 @@ escape is a process that explicitly calls `setsid()` to detach itself
 ```
 wt                       list worktrees
 wt init                  create .wt.yaml (interactive)
+wt add <ticket-or-branch>  fetch remote branch + create local worktree
 wt <ticket>              run default target in foreground
 wt -d <ticket>           run detached (supports groups)
 wt -d <ticket> --force   replace running detached
@@ -103,6 +104,43 @@ wt logs <ticket>         tail -f the detached log
 wt path <ticket>         print absolute worktree path
 wt tree <ticket>         print process tree of running group (PGID-scoped)
 ```
+
+## Adding a worktree from a remote branch
+
+Cloud agents (Cursor Cloud Agent, Devin, GitHub Copilot Workspace, etc.)
+commit their work to remote branches you may not have locally yet. `wt add`
+bridges the gap with a single command:
+
+```bash
+wt add WR-12          # ticket id → resolves against remote branches
+wt add cursor/foo     # exact remote branch name
+wt add origin/foo     # remote prefix is stripped automatically
+wt add WR-12 --path /path/to/dir  # custom worktree directory
+```
+
+What it does:
+
+1. `git fetch origin` to pull down the latest remote refs
+2. Resolves the argument against remote branches using the same ticket-style
+   logic as local resolution (prefix inference, fuzzy match)
+3. `git worktree add --track -b <branch> <path> origin/<branch>` so
+   `git pull` / `git push` work without `--set-upstream`
+4. Prints the worktree path; subsequent `wt <ticket>` resolves normally
+
+**Worktree path naming** defaults to `../<repo-name>-<branch-slug>` where
+the slug lowercases the branch name and replaces non-alphanumeric characters
+with `-`. Override with `--path`.
+
+**Stale local branch**: if a local branch with the same name already exists,
+`wt add` exits with an error rather than overwriting it. Delete the branch
+manually (`git branch -D <branch>`) and retry.
+
+**Idempotent**: re-running `wt add WR-12` when the worktree already exists
+at the same path is a no-op and prints the path.
+
+**Auth prompts**: `wt add` runs `git fetch` which may prompt for SSH
+passphrase or other credentials. The terminal is connected to git's stdin/tty
+so prompts flow through normally.
 
 ## Resolution
 
