@@ -102,8 +102,34 @@ wt stop --all            stop everything, all repos
 wt status                show all detached apps, all repos
 wt logs <ticket>         tail -f the detached log
 wt path <ticket>         print absolute worktree path
+wt cd <ticket>           same path as `wt path`; in a tty, stderr hints at shell-init
+wt shell-init <shell>    print a shell wrapper (bash/zsh/fish); see below
 wt tree <ticket>         print process tree of running group (PGID-scoped)
 ```
+
+## Shell integration (`wt cd`)
+
+A child process cannot change the parent shell’s working directory. For a real
+`wt cd` inside your interactive shell, load a small wrapper:
+
+- **zsh / bash**: print the function and paste it into your rc file, or use
+  `eval` one-liner:
+
+  ```bash
+  eval "$(wt shell-init zsh)"   # ~/.zshrc
+  eval "$(wt shell-init bash)"  # ~/.bashrc
+  ```
+
+  There is no `--install` for bash/zsh (no standard drop-in directory; editing
+  rc files automatically would be intrusive).
+
+- **fish**: either `eval "$(wt shell-init fish)"` or install into conf.d (no rc
+  edit): `wt shell-init fish --install` writes
+  `$XDG_CONFIG_HOME/fish/conf.d/wt.fish` (default `~/.config/fish/conf.d/wt.fish`).
+  Remove with `wt shell-init fish --uninstall`.
+
+Without the wrapper, `wt cd <ticket>` still prints the worktree path on stdout
+(the same resolution as `wt path`), so `cd "$(wt cd 12)"` works manually.
 
 ## Adding a worktree from a remote branch
 
