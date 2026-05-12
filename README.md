@@ -192,17 +192,6 @@ ticket_style: github       # numeric IDs: 123-fix-bug -> #123
 ticket_style: 'TASK_(\d+)' # any regex; 1 group = full token, 2 groups = prefix-N
 ```
 
-## Working with docs assets
-
-PNG images under `docs/` must stay below 500 KB. After adding or replacing
-an image, run:
-
-```bash
-./scripts/optimise-images.sh
-```
-
-CI will fail the build if any `docs/*.png` exceeds the budget.
-
 ## License
 
 MIT.
