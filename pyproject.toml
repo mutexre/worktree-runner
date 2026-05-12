@@ -31,11 +31,11 @@ Issues = "https://github.com/mutexre/worktree-runner/issues"
 [project.scripts]
 wt = "wt:main"
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 wt = ["skills/**/*"]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
