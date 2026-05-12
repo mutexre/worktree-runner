@@ -1,4 +1,4 @@
 targets:
-  run: pip install -e . --index-url https://pypi.org/simple/
+  run: pip install -e . --no-build-isolation
   test: python -m pytest
   install-skill: wt install-skill
