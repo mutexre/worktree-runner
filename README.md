@@ -142,6 +142,30 @@ at the same path is a no-op and prints the path.
 passphrase or other credentials. The terminal is connected to git's stdin/tty
 so prompts flow through normally.
 
+### Crash detection
+
+`wt` detects crashed detached processes on every invocation. When a process
+dies unexpectedly (i.e. without a preceding `wt stop`), the next `wt` command
+records the crash in the state file. `wt status` then shows an extra section:
+
+```
+EXITED SINCE LAST CHECK:
+  myapp/SPLAT-12 / server   exit ?   4m ago
+    ──── last 10 log lines ────
+    [vite] error: Cannot find module 'react'
+    ...
+```
+
+Exit entries are **cleared after the first `wt status` display** (acknowledged
+on read). Clean shutdowns via `wt stop` are never shown — only unexpected
+exits appear here.
+
+**Exit code shown as `exit ?`**: because detached processes run in their own
+session (`start_new_session=True`), `wt` is not their parent and cannot
+retrieve the exit code via `waitpid`. The exit code is stored as `null` in the
+state file. A push-based watcher (WR-19) would resolve this by observing the
+process at launch time.
+
 ## Resolution
 
 `wt` resolves the argument against three things, in this order:

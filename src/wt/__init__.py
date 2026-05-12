@@ -21,8 +21,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -586,6 +587,88 @@ def _state_alive_pids_str(st: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Exit-sweep helpers (WR-8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _read_log_tail(log_path: Path, n: int = 10) -> list[str]:
+    """Return the last *n* lines of *log_path*; [] if missing or unreadable."""
+    if not log_path.exists():
+        return []
+    try:
+        with open(log_path, errors="replace") as f:
+            tail = deque(f, maxlen=n)
+        return [line.rstrip("\n") for line in tail]
+    except OSError:
+        return []
+
+
+def _format_ago(iso_ts: str) -> str:
+    """'2026-05-12T19:30:00+00:00' → '5m ago'."""
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = int((datetime.now(timezone.utc) - dt).total_seconds())
+        if delta < 60:
+            return f"{delta}s ago"
+        if delta < 3600:
+            return f"{delta // 60}m ago"
+        return f"{delta // 3600}h ago"
+    except (ValueError, TypeError):
+        return iso_ts
+
+
+def _sweep_exits() -> None:
+    """Detect crashed processes and record exit entries in their state files.
+
+    Runs on every ``wt`` invocation before the main command.  Only does OS
+    liveness checks + log-tail reads for processes that actually died, so the
+    overhead is negligible for the common case (everything still running).
+    """
+    if not CACHE_DIR.exists():
+        return
+    for sf in CACHE_DIR.glob("*.json"):
+        try:
+            st = _read_state(sf)
+            if not st:
+                continue
+            if st.get("stopping"):
+                continue
+            if _is_stale_boot(st):
+                continue
+            procs = _state_pids(st)
+            if not procs:
+                continue
+
+            already_recorded: set[int] = {e["pid"] for e in st.get("exits", [])}
+            new_exits: list[dict] = []
+            for p in procs:
+                pid = int(p["pid"])
+                if pid in already_recorded:
+                    continue
+                if _proc_alive(pid, p.get("start_time")) is False:
+                    log_path = sf.with_suffix(".log")
+                    # exit_code is always None: wt is not the parent of detached
+                    # processes (start_new_session=True puts them in their own
+                    # session), so waitpid returns ECHILD.  WR-19 (push-based
+                    # watcher) is the path to recovering the actual exit code.
+                    new_exits.append({
+                        "name": p.get("name", "run"),
+                        "pid": pid,
+                        "exit_code": None,
+                        "exited_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "log_tail": _read_log_tail(log_path),
+                    })
+
+            if new_exits:
+                updated = dict(st)
+                updated["exits"] = st.get("exits", []) + new_exits
+                _write_state_atomic(sf, updated)
+        except OSError as exc:
+            info(f"sweep: skipping {sf.name}: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Subcommands
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -792,6 +875,10 @@ def cmd_stop(args) -> int:
         for sf in sorted(CACHE_DIR.glob("*.json")):
             st = _read_state(sf)
             if st and _state_any_alive(st):
+                # Set stopping flag before signalling so sweep won't record a crash.
+                flagged = dict(st)
+                flagged["stopping"] = True
+                _write_state_atomic(sf, flagged)
                 pids = _state_alive_pids_str(st)
                 info(f"stopping {st.get('repo_name')}/{st.get('label')} (pid {pids})")
                 _state_terminate_all(st)
@@ -812,10 +899,18 @@ def cmd_stop(args) -> int:
         info(f"{w.label} is not running (no state file)")
         return 0
     if not _state_any_alive(st):
-        pids = ", ".join(str(p["pid"]) for p in _state_pids(st))
-        info(f"{w.label} pid(s) {pids} stale, cleaning state file")
+        exits = st.get("exits", [])
+        if exits:
+            info(f"{w.label}: not running (crashed — run `wt status` to see details)")
+        else:
+            pids = ", ".join(str(p["pid"]) for p in _state_pids(st))
+            info(f"{w.label} pid(s) {pids} stale, cleaning state file")
         state_path.unlink(missing_ok=True)
         return 0
+    # Set stopping flag before signalling so sweep won't record a crash.
+    flagged = dict(st)
+    flagged["stopping"] = True
+    _write_state_atomic(state_path, flagged)
     pids = _state_alive_pids_str(st)
     info(f"stopping {w.label} (pid {pids})")
     ok = _state_terminate_all(st)
@@ -958,33 +1053,71 @@ def cmd_status(_args) -> int:
     if not CACHE_DIR.exists():
         print("no detached apps running")
         return 0
-    rows: list[tuple[str, ...]] = [("REPO/LABEL", "TARGET", "PID", "UPTIME", "WORKTREE")]
-    found = False
+
+    running_rows: list[tuple[str, ...]] = [("REPO/LABEL", "TARGET", "PID", "UPTIME", "WORKTREE")]
+    found_running = False
+    # (state_file, state_dict, exits_list) for entries to display then clear
+    exits_pending: list[tuple[Path, dict, list[dict]]] = []
+
     for sf in sorted(CACHE_DIR.glob("*.json")):
         st = _read_state(sf)
         if not st:
             sf.unlink(missing_ok=True)
             continue
-        if not _state_any_alive(st):
+
+        has_alive = _state_any_alive(st)
+        exits = st.get("exits", [])
+
+        if exits:
+            exits_pending.append((sf, st, exits))
+
+        if has_alive:
+            try:
+                uptime = _format_uptime(time.time() - float(st.get("started_at", time.time())))
+            except (TypeError, ValueError):
+                uptime = "?"
+            nice = f"{st.get('repo_name', '?')}/{st.get('label', '?')}"
+            for p in _state_pids(st):
+                status = _proc_alive(int(p["pid"]), p.get("start_time"))
+                if status is True:
+                    running_rows.append((nice, p.get("name", "?"), str(p["pid"]), uptime, st.get("worktree", "?")))
+                    found_running = True
+                elif status is None:
+                    running_rows.append((nice, p.get("name", "?"), f"{p['pid']}(?)", uptime, st.get("worktree", "?")))
+                    found_running = True
+        elif not exits:
             sf.unlink(missing_ok=True)
-            continue
-        try:
-            uptime = _format_uptime(time.time() - float(st.get("started_at", time.time())))
-        except (TypeError, ValueError):
-            uptime = "?"
-        nice = f"{st.get('repo_name', '?')}/{st.get('label', '?')}"
-        for p in _state_pids(st):
-            status = _proc_alive(int(p["pid"]), p.get("start_time"))
-            if status is True:
-                rows.append((nice, p.get("name", "?"), str(p["pid"]), uptime, st.get("worktree", "?")))
-                found = True
-            elif status is None:
-                rows.append((nice, p.get("name", "?"), f"{p['pid']}(?)", uptime, st.get("worktree", "?")))
-                found = True
-    if not found:
+
+    if not found_running and not exits_pending:
         print("no detached apps running")
         return 0
-    _print_table(rows)
+
+    if found_running:
+        _print_table(running_rows)
+
+    if exits_pending:
+        print()
+        print("EXITED SINCE LAST CHECK:")
+        for sf, st, exits in exits_pending:
+            nice = f"{st.get('repo_name', '?')}/{st.get('label', '?')}"
+            for e in exits:
+                ec = e.get("exit_code")
+                ec_str = f"exit {ec}" if ec is not None else "exit ?"
+                ago = _format_ago(e.get("exited_at", ""))
+                print(f"  {nice} / {e.get('name', '?')}   {ec_str}   {ago}")
+                log_tail = e.get("log_tail", [])
+                if log_tail:
+                    print("    \u2500\u2500\u2500\u2500 last 10 log lines \u2500\u2500\u2500\u2500")
+                    for line in log_tail:
+                        print(f"    {line}")
+            # Acknowledge: clear exits; delete file if nothing alive.
+            updated = dict(st)
+            updated.pop("exits", None)
+            if _state_any_alive(st):
+                _write_state_atomic(sf, updated)
+            else:
+                sf.unlink(missing_ok=True)
+
     return 0
 
 
@@ -1246,6 +1379,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         argv = sys.argv[1:]
 
     try:
+        _sweep_exits()
+
         if len(argv) == 0:
             argv = ["ls"]
 
