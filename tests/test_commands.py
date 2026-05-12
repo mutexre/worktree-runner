@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from tests.conftest import _git, write_wt_yaml
-from wt import main, cmd_install_skill
+from wt import main, cmd_install_skill, cmd_shell_init
 
 
 class TestWtInit:
@@ -103,6 +103,101 @@ class TestMainEntryPoint:
         assert rc == 0
         out = capsys.readouterr().out.strip()
         assert "splat-10" in out.lower()
+
+    def test_cd_prints_same_path_as_path_non_tty(
+        self, repo_with_worktrees, monkeypatch, capsys,
+    ):
+        monkeypatch.chdir(repo_with_worktrees["repo"])
+        monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+        rc_path = main(["path", "SPLAT-10"])
+        out_path = capsys.readouterr().out.strip()
+        rc_cd = main(["cd", "SPLAT-10"])
+        out_cd = capsys.readouterr().out.strip()
+        assert rc_path == 0 and rc_cd == 0
+        assert out_path == out_cd
+
+    def test_cd_tty_prints_tip(self, repo_with_worktrees, monkeypatch, capsys):
+        monkeypatch.chdir(repo_with_worktrees["repo"])
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        rc = main(["cd", "SPLAT-10"])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "shell-init" in err
+
+    def test_shell_init_zsh_prints_wrapped_function(self, capsys):
+        args = type(
+            "Args", (),
+            {"shell": "zsh", "install": False, "uninstall": False, "force": False},
+        )()
+        rc = cmd_shell_init(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'command wt path "$2"' in out
+        assert "wt() {" in out
+
+    def test_shell_init_bash_install_rejected(self, capsys):
+        args = type(
+            "Args", (),
+            {"shell": "bash", "install": True, "uninstall": False, "force": False},
+        )()
+        rc = cmd_shell_init(args)
+        assert rc == 1
+        assert "not supported" in capsys.readouterr().err
+
+    def test_shell_init_fish_install_write_unrelated_errors(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        conf = tmp_path / "cfg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(conf))
+        drop = conf / "fish" / "conf.d"
+        drop.mkdir(parents=True)
+        target = drop / "wt.fish"
+        target.write_text("# user\n")
+        args = type(
+            "Args", (),
+            {"shell": "fish", "install": True, "uninstall": False, "force": False},
+        )()
+        rc = cmd_shell_init(args)
+        assert rc == 1
+        assert target.read_text() == "# user\n"
+
+    def test_shell_init_fish_install_force_replaces(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        conf = tmp_path / "cfg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(conf))
+        drop = conf / "fish" / "conf.d"
+        drop.mkdir(parents=True)
+        target = drop / "wt.fish"
+        target.write_text("# user\n")
+        args = type(
+            "Args", (),
+            {"shell": "fish", "install": True, "uninstall": False, "force": True},
+        )()
+        rc = cmd_shell_init(args)
+        assert rc == 0
+        text = target.read_text()
+        assert "# BEGIN wt shell integration" in text
+        assert "function wt" in text
+
+    def test_shell_init_fish_uninstall_managed(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        conf = tmp_path / "cfg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(conf))
+        args = type(
+            "Args", (),
+            {"shell": "fish", "install": True, "uninstall": False, "force": False},
+        )()
+        assert cmd_shell_init(args) == 0
+        target = conf / "fish" / "conf.d" / "wt.fish"
+        assert target.is_file()
+        args2 = type(
+            "Args", (),
+            {"shell": "fish", "install": False, "uninstall": True, "force": False},
+        )()
+        assert cmd_shell_init(args2) == 0
+        assert not target.exists()
 
     def test_status_no_crash(self, tmp_path, monkeypatch):
         monkeypatch.setattr("wt.CACHE_DIR", tmp_path / "cache")
