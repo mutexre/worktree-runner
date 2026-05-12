@@ -16,12 +16,16 @@ for automation.
 
 ## Best-effort, not guaranteed
 
-- **PID reuse** — Stale state can, in exceptional cases, make `wt status`
-  falsely report "alive" or make `wt stop` signal the wrong process after PIDs
-  are recycled by the kernel. Discussed further in spike **WR-1**.
-- **Reboot leftovers** — State files surviving a reboot can reference PIDs/PGIDs
-  that the new boot later assigns to unrelated processes; `wt status` and
-  `wt stop --all` may then misbehave until state is swept or invalidated.
+- **Modern state guards (WR-12, after WR-1)** — Current `wt` records `boot_id`
+  when detaching and each leader's process start timestamp from `ps`. Stale JSON
+  from a prior boot is treated as dead before any signals. Within a boot, if the
+  same PID slot is reused by another process, the start-time check fails and
+  `wt status` / `wt stop` do not confuse it with your old job — the usual PID-reuse
+  failure mode from early `wt` is addressed for guarded state files.
+- **Legacy or unverifiable paths** — State files produced before those fields land
+  (or if `start_time`/boot checks cannot run) warn once per label and revert to a
+  `killpg`-only interpretation; ambiguity can still surface as `pid(?)` in
+  `wt status`. Re-run `wt -d` to regenerate guarded state once you upgrade.
 
 ## Not in scope (use other tools)
 
