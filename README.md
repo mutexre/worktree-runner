@@ -23,6 +23,33 @@ An agent can also run commands in the right worktree, but each invocation
 costs tokens and a few seconds of round-trip. `wt 12` is a plain command:
 no LLM call, no latency.
 
+## Comparison with alternatives
+
+`wt` combines worktree resolution, target running, and detached process
+tracking under ticket-keyed addressing. Individual tools cover one of these
+areas; replicating the full workflow requires stitching several together.
+
+```
+# Run a target in a worktree from anywhere (task runners require cd first)
+wt -t test 12
+
+# Launch services detached, then check status across all repos
+wt -d 12
+wt status
+
+# Stop by ticket — SIGTERMs the entire process group (PGID), no orphans
+wt stop 12
+```
+
+Things the stitched stack (`just` + `overmind` + shell alias) has no
+equivalent for: cross-repo `wt status`, ticket-keyed addressing from any
+directory, PGID-level group stop that includes child processes, and crash
+detection with log tails.
+
+Full side-by-side comparison across eight scenarios and four tool categories
+(worktree wrappers, task runners, process managers, AI-agent orchestrators):
+[COMPARISON.md](COMPARISON.md).
+
 ## Setup
 
 ```bash
