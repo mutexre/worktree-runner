@@ -25,29 +25,46 @@ no LLM call, no latency.
 
 ## Comparison with alternatives
 
-`wt` combines worktree resolution, target running, and detached process
-tracking under ticket-keyed addressing. Individual tools cover one of these
-areas; replicating the full workflow requires stitching several together.
+A typical multi-worktree workflow without `wt` (using `just` + `overmind` +
+shell aliases):
 
 ```
-# Run a target in a worktree from anywhere (task runners require cd first)
-wt -t test 12
-
-# Launch services detached, then check status across all repos
-wt -d 12
-wt status
-
-# Stop by ticket — SIGTERMs the entire process group (PGID), no orphans
-wt stop 12
+$ git fetch origin
+$ git worktree add --track -b feature/WR-12-api \
+    ../myapp-feature-wr-12-api origin/feature/WR-12-api
+$ cd ../myapp-feature-wr-12-api
+$ just test
+$ overmind start -D                  # needs a Procfile too
+$ cd ../myapp-feature-wr-7-ui
+$ overmind start -D
+$ cd -
+$ overmind echo                      # only this directory's Procfile
+                                     # no way to see WR-12 from here
+$ overmind stop                      # only this directory
+$ cd ../myapp-feature-wr-12-api
+$ overmind stop                      # now kill that one too
 ```
 
-Things the stitched stack (`just` + `overmind` + shell alias) has no
-equivalent for: cross-repo `wt status`, ticket-keyed addressing from any
-directory, PGID-level group stop that includes child processes, and crash
-detection with log tails.
+Same workflow with `wt`:
 
-Full side-by-side comparison across eight scenarios and four tool categories
-(worktree wrappers, task runners, process managers, AI-agent orchestrators):
+```
+$ wt add 12
+$ wt -t test 12
+$ wt -d 12
+$ wt -d 7
+$ wt status
+REPO/LABEL      TARGET  PID    UPTIME    WORKTREE
+myapp/WR-12     server  34567  00:01:42  ../myapp-feature-wr-12-api
+myapp/WR-12     worker  34590  00:01:42  ../myapp-feature-wr-12-api
+myapp/WR-7      server  33445  00:14:08  ../myapp-feature-wr-7-ui
+$ wt stop 12
+$ wt stop 7
+```
+
+No `cd`. No Procfile. Cross-repo status in one command. Stop by ticket,
+not by directory — `SIGTERM` hits the whole process group (PGID), no orphans.
+
+Full side-by-side breakdown (eight scenarios, four tool categories):
 [COMPARISON.md](COMPARISON.md).
 
 ## Setup
