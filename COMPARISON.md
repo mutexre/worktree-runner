@@ -115,15 +115,15 @@ being in the project directory and maintaining a separate config file
 
 ---
 
-### 4. List running detached groups across all repos and worktrees
+### 4. List running detached groups
 
 ```
 # wt
-wt status
+wt status                   # current repo
+wt status -g                # all repos (opt-in)
 
 # overmind
 overmind echo                # only the current directory's Procfile
-                             # no cross-repo aggregation
 
 # pm2
 pm2 list                    # global, but not repo/worktree-aware
@@ -132,10 +132,10 @@ pm2 list                    # global, but not repo/worktree-aware
 process-compose process list # current project only
 ```
 
-`wt status` scans `~/.cache/wt/` and shows every detached app across every
-repository. Process managers are either scoped to one project (`overmind`,
-`foreman`, `process-compose`) or global without repo context (`pm2`). None
-group output by repository and worktree label.
+`wt status` shows detached groups for the current repo, grouped by worktree
+label. `wt status -g` widens the view to all repos. Process managers are
+either scoped to one directory (`overmind`, `foreman`, `process-compose`) or
+global without repo/worktree context (`pm2`).
 
 ---
 
@@ -166,11 +166,9 @@ a ticket id.
 ```
 # wt
 wt stop 12                   # SIGTERM → wait 5s → SIGKILL, entire PGID
-wt stop --all                # all repos, all worktrees
 
 # overmind
 overmind stop                # current directory only
-overmind kill                # no cross-repo --all
 
 # pm2
 pm2 stop <name>
@@ -181,9 +179,9 @@ process-compose down         # current project only
 ```
 
 `wt stop` targets the process group by PGID, so children that didn't escape
-via `setsid()` are included. `wt stop --all` spans every repository.
-`overmind` and `process-compose` stop the current project only. `pm2 kill`
-tears down the entire pm2 daemon, not a single app group.
+via `setsid()` are included. `overmind` and `process-compose` stop the current
+directory only. `pm2 kill` tears down the entire pm2 daemon, not a single app
+group.
 
 ---
 
@@ -234,7 +232,7 @@ manager, and a worktree helper together:
 | Create worktree from ticket | `wt add 12` | `git fetch && git worktree add …` (manual branch name + path) |
 | Run target in worktree | `wt -t test 12` | `cd "$(wt-resolve 12)" && just test` (custom `wt-resolve` alias) |
 | Launch detached group | `wt -d 12` | `cd … && overmind start -D` (separate Procfile needed) |
-| Cross-repo status | `wt status` | No equivalent without a custom daemon or polling script |
+| Status | `wt status` | `overmind echo` (current dir only) |
 | Tail log | `wt logs 12` | `overmind connect <proc>` (tmux, not plain tail) |
 | Stop group (PGID) | `wt stop 12` | `overmind stop` (current dir only, tmux-based, no PGID) |
 | cd by ticket | `wt cd 12` | Custom shell function parsing `git worktree list` |
@@ -244,8 +242,6 @@ manager, and a worktree helper together:
 addressing throughout. The things it does that the stitched stack has no
 equivalent for:
 
-- **Cross-repo `wt status`**: aggregates running apps from every repository
-  in `~/.cache/wt/`, not just the current directory.
 - **Ticket-keyed addressing**: `wt 12` resolves the same worktree from any
   directory in the repo. Task runners and process managers require you to be
   in the right directory.

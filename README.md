@@ -43,8 +43,8 @@ $ cd ../myapp-feature-wr-7-ui
 $ make server >server.log 2>&1 &
 $ echo $!                            # 33445
 
-$ # "what's running across my repos?" — no built-in answer
-$ ps aux | grep "make server"        # manual, fragile, no repo context
+$ # "what's running?" — no built-in answer
+$ ps aux | grep "make server"        # manual, fragile
 
 $ kill 34567                         # just the leader; npm/vite children
                                      # may survive as orphans
@@ -57,16 +57,16 @@ $ wt -t test 12
 $ wt -d 12
 $ wt -d 7
 $ wt status
-REPO/LABEL      TARGET  PID    UPTIME    WORKTREE
-myapp/WR-12     server  34567  00:01:42  ../myapp-feature-wr-12-api
-myapp/WR-7      server  33445  00:14:08  ../myapp-feature-wr-7-ui
+LABEL   TARGET  PID    UPTIME    WORKTREE
+WR-12   server  34567  00:01:42  ../myapp-feature-wr-12-api
+WR-7    server  33445  00:14:08  ../myapp-feature-wr-7-ui
 $ wt stop 12
 $ wt stop 7
 ```
 
 No `cd`, no PID bookkeeping, no orphans — `wt stop` SIGTERMs the entire
 process group (PGID) so child processes (build watchers, npm children,
-hot-reload helpers) are included. `wt status` works across all repos.
+hot-reload helpers) are included.
 
 Full side-by-side breakdown (eight scenarios, four tool categories):
 [COMPARISON.md](COMPARISON.md).
@@ -155,8 +155,9 @@ wt -d <ticket>           run detached (supports groups)
 wt -d <ticket> --force   replace running detached
 wt -t <target> <ticket>  run a specific target
 wt stop <ticket>         stop detached (SIGTERM, SIGKILL after 5s)
-wt stop --all            stop everything, all repos
-wt status                show all detached apps, all repos
+wt stop -g               stop everything across all repos
+wt status                show detached apps (current repo)
+wt status -g             show detached apps across all repos
 wt logs <ticket>         tail -f the detached log
 wt path <ticket>         print absolute worktree path
 wt cd <ticket>           same path as `wt path`; in a tty, stderr hints at shell-init
