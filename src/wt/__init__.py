@@ -1632,7 +1632,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not args.ticket:
                 return err("specify <ticket>")
             if passthrough and args.target:
-                return err("cannot combine -t with --")
+                print("[wt] error: cannot combine -t with --", file=sys.stderr)
+                return 2
             args.passthrough = passthrough
             return cmd_launch_detached(args)
 
@@ -1646,7 +1647,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             except SystemExit:
                 return 1
             if passthrough and args.target:
-                return err("cannot combine -t with --")
+                print("[wt] error: cannot combine -t with --", file=sys.stderr)
+                return 2
             args.passthrough = passthrough
             return cmd_launch_fg(args)
 
