@@ -204,9 +204,9 @@ class TestMainEntryPoint:
         rc = main(["status"])
         assert rc == 0
 
-    def test_stop_all_no_crash(self, tmp_path, monkeypatch):
+    def test_stop_global_no_crash(self, tmp_path, monkeypatch):
         monkeypatch.setattr("wt.CACHE_DIR", tmp_path / "cache")
-        rc = main(["stop", "--all"])
+        rc = main(["stop", "-g"])
         assert rc == 0
 
     def test_foreground_launch(self, repo_with_worktrees, monkeypatch):

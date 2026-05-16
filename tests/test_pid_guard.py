@@ -147,10 +147,10 @@ class TestRebootSimulation:
         mock_kill.assert_not_called()
         assert "no detached apps running" in capsys.readouterr().out
 
-    def test_stop_all_after_reboot(self, cache_dir, capsys):
-        """stop --all after reboot: no signal sent, state cleaned."""
+    def test_stop_global_after_reboot(self, cache_dir, capsys):
+        """stop -g after reboot: no signal sent, state cleaned."""
         sf = _write_state(cache_dir, "fakerepo-abc__TEST-1", _make_state(boot_id=BOOT_A))
-        args = types.SimpleNamespace(all=True, ticket=None)
+        args = types.SimpleNamespace(global_=True, ticket=None)
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_B), \
              mock.patch("os.killpg") as mock_kill:
             wt.cmd_stop(args)
