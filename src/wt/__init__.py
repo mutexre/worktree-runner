@@ -1064,7 +1064,7 @@ def cmd_launch_detached(args) -> int:
 
 
 def cmd_stop(args) -> int:
-    if args.all:
+    if args.global_:
         if not CACHE_DIR.exists():
             info("nothing running")
             return 0
@@ -1086,7 +1086,7 @@ def cmd_stop(args) -> int:
         return 0
 
     if not args.ticket:
-        return err("specify <ticket> or --all")
+        return err("specify <ticket> or -g/--global")
 
     repo = _current_repo()
     w = _resolve(repo, args.ticket, _style_for(repo))
@@ -1246,17 +1246,23 @@ def cmd_tree(args) -> int:
     return 0
 
 
-def cmd_status(_args) -> int:
+def cmd_status(args) -> int:
     if not CACHE_DIR.exists():
         print("no detached apps running")
         return 0
+
+    if args.global_:
+        glob_pattern = "*.json"
+    else:
+        repo = _current_repo()
+        glob_pattern = f"{_repo_id(repo)}__*.json"
 
     running_rows: list[tuple[str, ...]] = [("REPO/LABEL", "TARGET", "PID", "UPTIME", "WORKTREE")]
     found_running = False
     # (state_file, state_dict, exits_list) for entries to display then clear
     exits_pending: list[tuple[Path, dict, list[dict]]] = []
 
-    for sf in sorted(CACHE_DIR.glob("*.json")):
+    for sf in sorted(CACHE_DIR.glob(glob_pattern)):
         st = _read_state(sf)
         if not st:
             sf.unlink(missing_ok=True)
@@ -1502,8 +1508,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "  wt -d SPLAT-12 --force  replace running detached\n"
             "  wt -t server SPLAT-12   run a specific target instead of 'run'\n"
             "  wt stop SPLAT-12        stop detached\n"
-            "  wt stop --all           stop every detached app (across all repos)\n"
-            "  wt status               show running detached apps (across all repos)\n"
+            "  wt stop -g              stop every detached app (across all repos)\n"
+            "  wt status               show running detached apps (current repo)\n"
+            "  wt status -g            show running detached apps (all repos)\n"
             "  wt logs SPLAT-12        tail detached log\n"
             "  wt path SPLAT-12        print absolute worktree path\n"
             "  wt cd SPLAT-12          same as path; tty stderr hints shell-init\n"
@@ -1587,10 +1594,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_stop = sub.add_parser("stop", help="stop detached app")
     sp_stop.add_argument("ticket", nargs="?")
-    sp_stop.add_argument("--all", action="store_true", help="stop every detached (any repo)")
+    sp_stop.add_argument("-g", "--global", dest="global_", action="store_true",
+                         help="stop every detached group across all repos")
     sp_stop.set_defaults(func=cmd_stop)
 
-    sp_status = sub.add_parser("status", help="show running detached apps (any repo)")
+    sp_status = sub.add_parser("status", help="show running detached apps")
+    sp_status.add_argument("-g", "--global", dest="global_", action="store_true",
+                           help="show detached apps across all repos (default: current repo only)")
     sp_status.set_defaults(func=cmd_status)
 
     sp_tree = sub.add_parser("tree", help="print process tree of a running worktree group")

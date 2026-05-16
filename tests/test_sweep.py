@@ -307,7 +307,7 @@ class TestCmdStatusExits:
             }
         ])
 
-        rc = main(["status"])
+        rc = main(["status", "-g"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "EXITED SINCE LAST CHECK" in out
@@ -326,14 +326,13 @@ class TestCmdStatusExits:
             }
         ])
 
-        main(["status"])
+        main(["status", "-g"])
         # State file should be deleted (no alive processes, exits acknowledged).
         assert not sf.exists()
 
     def test_no_exits_no_section(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(wt_mod, "CACHE_DIR", tmp_path)
-        # Empty cache dir — no exits, no running.
-        rc = main(["status"])
+        rc = main(["status", "-g"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "EXITED SINCE LAST CHECK" not in out

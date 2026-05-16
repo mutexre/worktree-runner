@@ -8,6 +8,7 @@ import subprocess
 import time
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -142,15 +143,15 @@ class TestRebootSimulation:
         sf = _write_state(cache_dir, "fakerepo-abc__TEST-1", _make_state(boot_id=BOOT_A))
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_B), \
              mock.patch("os.killpg") as mock_kill:
-            wt.cmd_status(None)
+            wt.cmd_status(SimpleNamespace(global_=True))
         assert not sf.exists(), "state file should be cleaned up"
         mock_kill.assert_not_called()
         assert "no detached apps running" in capsys.readouterr().out
 
-    def test_stop_all_after_reboot(self, cache_dir, capsys):
-        """stop --all after reboot: no signal sent, state cleaned."""
+    def test_stop_global_after_reboot(self, cache_dir, capsys):
+        """stop -g after reboot: no signal sent, state cleaned."""
         sf = _write_state(cache_dir, "fakerepo-abc__TEST-1", _make_state(boot_id=BOOT_A))
-        args = types.SimpleNamespace(all=True, ticket=None)
+        args = SimpleNamespace(global_=True, ticket=None)
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_B), \
              mock.patch("os.killpg") as mock_kill:
             wt.cmd_stop(args)
@@ -163,7 +164,7 @@ class TestRebootSimulation:
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
              mock.patch.object(wt, "_group_alive", return_value=True), \
              mock.patch.object(wt, "_get_process_start_time", return_value=LSTART):
-            wt.cmd_status(None)
+            wt.cmd_status(SimpleNamespace(global_=True))
         out = capsys.readouterr().out
         assert "99999" in out
         assert "fakerepo" in out
@@ -201,7 +202,7 @@ class TestWithinBootPidReuse:
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
              mock.patch.object(wt, "_group_alive", return_value=True), \
              mock.patch.object(wt, "_get_process_start_time", return_value=LSTART_OTHER):
-            wt.cmd_status(None)
+            wt.cmd_status(SimpleNamespace(global_=True))
         assert not sf.exists()
         assert "no detached apps running" in capsys.readouterr().out
 
@@ -373,7 +374,7 @@ class TestStatusPerRow:
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
              mock.patch.object(wt, "_group_alive", side_effect=fake_group_alive), \
              mock.patch.object(wt, "_get_process_start_time", side_effect=fake_start_time):
-            wt.cmd_status(None)
+            wt.cmd_status(SimpleNamespace(global_=True))
         out = capsys.readouterr().out
         assert "100" in out
         assert "200" not in out
@@ -391,7 +392,7 @@ class TestUnknownStateDisplay:
         with mock.patch.object(wt, "_get_boot_id", return_value=BOOT_A), \
              mock.patch.object(wt, "_group_alive", return_value=True), \
              mock.patch.object(wt, "_get_process_start_time", return_value=None):
-            wt.cmd_status(None)
+            wt.cmd_status(SimpleNamespace(global_=True))
         out = capsys.readouterr().out
         assert "(?)" in out
         assert "fakerepo" in out
