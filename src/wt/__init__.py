@@ -925,10 +925,43 @@ def cmd_logs(args) -> int:
     return subprocess.call(["tail", "-F", str(log)])
 
 
+def _passthrough_name(cmd_str: str) -> str:
+    """Extract a short name from a pass-through command for state files."""
+    first = cmd_str.split()[0] if cmd_str.strip() else "cmd"
+    return Path(first).name
+
+
+def _no_dispatcher_error() -> int:
+    print(
+        "[wt] error: no target dispatcher available. Either:\n"
+        "  - run `wt init` to create a .wt.yaml\n"
+        "  - or pass-through a command: wt <ticket> -- <your command>",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def _has_makefile(wt_path: Path) -> bool:
+    return (wt_path / "Makefile").exists() or (wt_path / "makefile").exists()
+
+
 def cmd_launch_fg(args) -> int:
     repo = _current_repo()
     config = _load_config(repo)
     w = _resolve(repo, args.ticket, _resolve_style(config))
+    passthrough: list[str] = getattr(args, "passthrough", [])
+
+    if passthrough:
+        cmd = " ".join(passthrough)
+        info(f"repo:     {repo.name}")
+        info(f"worktree: {w.path}")
+        info(f"branch:   {w.branch}")
+        info(f"running:  {cmd}")
+        return subprocess.call(cmd, shell=True, cwd=str(w.path))
+
+    if config is None and not _has_makefile(w.path):
+        return _no_dispatcher_error()
+
     target = args.target or DEFAULT_TARGET
     spec = _resolve_target(config, target)
 
@@ -952,8 +985,18 @@ def cmd_launch_detached(args) -> int:
     repo = _current_repo()
     config = _load_config(repo)
     w = _resolve(repo, args.ticket, _resolve_style(config))
-    target = args.target or DEFAULT_TARGET
-    spec = _resolve_target(config, target)
+    passthrough: list[str] = getattr(args, "passthrough", [])
+
+    if passthrough:
+        cmd_str = " ".join(passthrough)
+        spec = RunSpec(commands=[(_passthrough_name(cmd_str), cmd_str)])
+        target = "--"
+    else:
+        if config is None and not _has_makefile(w.path):
+            return _no_dispatcher_error()
+        target = args.target or DEFAULT_TARGET
+        spec = _resolve_target(config, target)
+
     sid = _state_id(repo, w)
     state_path = _state_file(sid)
     log_path = _log_file(sid)
@@ -1453,6 +1496,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  wt add WR-12 --path /tmp/my-wt  use a custom worktree path\n"
             "  wt SPLAT-12             launch 'run' target for SPLAT-12 (foreground)\n"
             "  wt 12                   same, fuzzy match (auto-detects SPLAT- prefix)\n"
+            "  wt SPLAT-12 -- pytest   pass-through: run pytest in the worktree\n"
+            "  wt -d SPLAT-12 -- npm run dev  detached pass-through\n"
             "  wt -d SPLAT-12          launch detached (supports service groups)\n"
             "  wt -d SPLAT-12 --force  replace running detached\n"
             "  wt -t server SPLAT-12   run a specific target instead of 'run'\n"
@@ -1570,7 +1615,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         if len(argv) == 0:
             argv = ["ls"]
 
-        # Detached form: `wt -d <ticket> [--force] [-t TARGET]`
+        # Split on `--`: everything after is a pass-through command.
+        passthrough: list[str] = []
+        if "--" in argv:
+            idx = argv.index("--")
+            passthrough = argv[idx + 1:]
+            argv = argv[:idx]
+
+        # Detached form: `wt -d <ticket> [--force] [-t TARGET] [-- cmd...]`
         if argv[0] == "-d":
             d = argparse.ArgumentParser(prog="wt -d", add_help=False)
             d.add_argument("ticket", nargs="?")
@@ -1579,9 +1631,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             args = d.parse_args(argv[1:])
             if not args.ticket:
                 return err("specify <ticket>")
+            if passthrough and args.target:
+                return err("cannot combine -t with --")
+            args.passthrough = passthrough
             return cmd_launch_detached(args)
 
-        # Foreground launch: `wt <ticket> [-t TARGET]`
+        # Foreground launch: `wt <ticket> [-t TARGET] [-- cmd...]`
         if argv[0] not in _RESERVED:
             f = argparse.ArgumentParser(prog="wt", add_help=False)
             f.add_argument("ticket")
@@ -1590,7 +1645,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 args = f.parse_args(argv)
             except SystemExit:
                 return 1
+            if passthrough and args.target:
+                return err("cannot combine -t with --")
+            args.passthrough = passthrough
             return cmd_launch_fg(args)
+
+        if passthrough:
+            return err("-- pass-through is only valid with wt <ticket> or wt -d <ticket>")
 
         parser = _build_parser()
         args = parser.parse_args(argv)
