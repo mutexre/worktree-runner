@@ -7,7 +7,7 @@ substring to a worktree of the current git repository and runs commands
 defined in `.wt.yaml` there. Tracks detached processes. **Not** a service
 supervisor — see [LIMITATIONS.md](LIMITATIONS.md) for scope and caveats.
 
-```
+```console
 $ wt -d 12
 $ wt -d 7
 $ wt status
@@ -17,19 +17,13 @@ myapp/SPLAT-7   server  33445  00:14:08  ../myapp-splat-7
 $ wt stop 7
 ```
 
-## vs. asking an AI agent
-
-An agent can also run commands in the right worktree, but each invocation
-costs tokens and a few seconds of round-trip. `wt 12` is a plain command:
-no LLM call, no latency.
-
 ## Comparison with alternatives
 
 The same multi-worktree workflow — fetch a ticket branch, run tests, launch
 two dev servers detached, check what's running, shut them down — done with
 plain git + shell versus `wt`:
 
-```
+```console
 # ── without wt ────────────────────────────────────────────────────────
 
 $ git fetch origin
@@ -160,7 +154,7 @@ all work normally.
 If you run bare `wt <ticket>` in a repo with neither `.wt.yaml` nor a
 Makefile, `wt` prints a hint:
 
-```
+```text
 [wt] error: no target dispatcher available. Either:
   - run `wt init` to create a .wt.yaml
   - or pass-through a command: wt <ticket> -- <your command>
@@ -176,7 +170,7 @@ reuse and reboot leftovers are [best-effort caveats](LIMITATIONS.md#best-effort-
 
 ## Commands
 
-```
+```text
 wt                       list worktrees
 wt init                  create .wt.yaml (interactive)
 wt add <ticket-or-branch>  fetch remote branch + create local worktree
@@ -264,7 +258,7 @@ so prompts flow through normally.
 dies unexpectedly (i.e. without a preceding `wt stop`), the next `wt` command
 records the crash in the state file. `wt status` then shows an extra section:
 
-```
+```text
 EXITED SINCE LAST CHECK:
   myapp/SPLAT-12 / server   exit ?   4m ago
     ──── last 10 log lines ────
