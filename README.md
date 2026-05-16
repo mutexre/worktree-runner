@@ -295,6 +295,8 @@ the prefix from existing branches.
 
 - `wt SPLAT-12` — exact ticket
 - `wt 12` — expands to `SPLAT-12` using the inferred prefix
+- `wt main` — branch name; the main worktree is just another worktree, no
+  special handling. Same for any branch (`wt master`, `wt trunk`, etc.).
 - `wt feature/login` — exact branch name (works even if no ticket scheme
   applies to this repo)
 - `wt login` — fuzzy substring against ticket, branch, or directory name
