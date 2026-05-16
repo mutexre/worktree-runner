@@ -88,6 +88,36 @@ groups:
 process. `wt stop 12` terminates all of them. If no `.wt.yaml` exists, `wt`
 falls back to `make <target>`.
 
+## Zero-config use (`--` pass-through)
+
+You don't need a `.wt.yaml` to run commands in a worktree. Pass `--` followed
+by any shell command:
+
+```bash
+wt SPLAT-12 -- pytest -v              # foreground
+wt -d SPLAT-12 -- npm run dev         # detached
+wt -d --force SPLAT-12 -- npm run dev # replace running
+```
+
+Everything after `--` is joined and run with `shell=True`, so pipelines,
+redirects, and env vars work (`wt 12 -- FOO=1 make && echo done`).
+
+Pass-through ignores `.wt.yaml` and Makefile entirely. `-t <name>` and `--`
+are mutually exclusive (error if combined).
+
+Detached pass-through processes get the same PGID-based tracking as
+config-defined targets — `wt status`, `wt stop`, `wt logs`, and `wt tree`
+all work normally.
+
+If you run bare `wt <ticket>` in a repo with neither `.wt.yaml` nor a
+Makefile, `wt` prints a hint:
+
+```
+[wt] error: no target dispatcher available. Either:
+  - run `wt init` to create a .wt.yaml
+  - or pass-through a command: wt <ticket> -- <your command>
+```
+
 Each target is launched as the leader of its own process group, so subprocesses
 it spawns without leaving that group — build watchers, hot-reload helpers,
 npm-spawned children, etc. — stay in the same PGID: `wt status` reflects them as
@@ -103,7 +133,9 @@ wt                       list worktrees
 wt init                  create .wt.yaml (interactive)
 wt add <ticket-or-branch>  fetch remote branch + create local worktree
 wt <ticket>              run default target in foreground
+wt <ticket> -- <cmd>     run <cmd> in the worktree (no config needed)
 wt -d <ticket>           run detached (supports groups)
+wt -d <ticket> -- <cmd>  detached pass-through
 wt -d <ticket> --force   replace running detached
 wt -t <target> <ticket>  run a specific target
 wt stop <ticket>         stop detached (SIGTERM, SIGKILL after 5s)
