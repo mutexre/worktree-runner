@@ -23,6 +23,54 @@ An agent can also run commands in the right worktree, but each invocation
 costs tokens and a few seconds of round-trip. `wt 12` is a plain command:
 no LLM call, no latency.
 
+## Comparison with alternatives
+
+The same multi-worktree workflow — fetch a ticket branch, run tests, launch
+two dev servers detached, check what's running, shut them down — done with
+plain git + shell versus `wt`:
+
+```
+# ── without wt ────────────────────────────────────────────────────────
+
+$ git fetch origin
+$ git worktree add --track -b feature/WR-12-api \
+    ../myapp-feature-wr-12-api origin/feature/WR-12-api
+$ cd ../myapp-feature-wr-12-api
+$ make test
+$ make server >server.log 2>&1 &     # hope you remember this PID
+$ echo $!                            # 34567
+$ cd ../myapp-feature-wr-7-ui
+$ make server >server.log 2>&1 &
+$ echo $!                            # 33445
+
+$ # "what's running?" — no built-in answer
+$ ps aux | grep "make server"        # manual, fragile
+
+$ kill 34567                         # just the leader; npm/vite children
+                                     # may survive as orphans
+$ kill 33445
+
+# ── with wt ───────────────────────────────────────────────────────────
+
+$ wt add 12
+$ wt -t test 12
+$ wt -d 12
+$ wt -d 7
+$ wt status
+LABEL   TARGET  PID    UPTIME    WORKTREE
+WR-12   server  34567  00:01:42  ../myapp-feature-wr-12-api
+WR-7    server  33445  00:14:08  ../myapp-feature-wr-7-ui
+$ wt stop 12
+$ wt stop 7
+```
+
+No `cd`, no PID bookkeeping, no orphans — `wt stop` SIGTERMs the entire
+process group (PGID) so child processes (build watchers, npm children,
+hot-reload helpers) are included.
+
+Full side-by-side breakdown (eight scenarios, four tool categories):
+[COMPARISON.md](COMPARISON.md).
+
 ## Setup
 
 ```bash
@@ -139,8 +187,9 @@ wt -d <ticket> -- <cmd>  detached pass-through
 wt -d <ticket> --force   replace running detached
 wt -t <target> <ticket>  run a specific target
 wt stop <ticket>         stop detached (SIGTERM, SIGKILL after 5s)
-wt stop --all            stop everything, all repos
-wt status                show all detached apps, all repos
+wt stop -g               stop everything across all repos
+wt status                show detached apps (current repo)
+wt status -g             show detached apps across all repos
 wt logs <ticket>         tail -f the detached log
 wt path <ticket>         print absolute worktree path
 wt cd <ticket>           same path as `wt path`; in a tty, stderr hints at shell-init
